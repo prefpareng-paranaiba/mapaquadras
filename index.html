@@ -61,8 +61,37 @@
         <script src="./layers/layers.js" type="text/javascript"></script> 
         <script src="./resources/Autolinker.min.js"></script>
         <script src="./resources/qgis2web.js"></script>
-    </body>
-    <script>
+		<script>
+var mosaicos = [
+  { nome: 'Santa Mônica (drone)', pasta: 'santa_monica', minZoom: 13, maxZoom: 20 }
+  // outro bairro: { nome: 'Outro Bairro (drone)', pasta: 'outro_bairro', minZoom: 13, maxZoom: 20 }
+];
+
+mosaicos.forEach(function (m) {
+  map.addLayer(new ol.layer.Tile({
+    title: m.nome,
+    zIndex: 5,
+    source: new ol.source.XYZ({
+      minZoom: m.minZoom,
+      maxZoom: m.maxZoom,
+      tileUrlFunction: function (tc) {
+        var z = tc[0], x = tc[1], y = tc[2];
+        var yTms = (1 << z) - 1 - y;   // gdal2tiles sem --xyz usa Y invertido
+        return m.pasta + '/' + z + '/' + x + '/' + yTms + '.png';
+      }
+    })
+  }));
+});
+// sobe todas as camadas vetoriais (quadras, ruas etc.) acima do mosaico
+function subirVetores(layers) {
+  layers.forEach(function (l) {
+    if (l.getLayers) { subirVetores(l.getLayers().getArray()); return; }
+    if (l instanceof ol.layer.Vector) l.setZIndex(10);
+  });
+}
+subirVetores(map.getLayers().getArray());
+</script>
+<script>
 setTimeout(function () {
   var param = new URLSearchParams(location.search).get('ll');
   if (!param) return;
@@ -130,4 +159,5 @@ setTimeout(function () {
   document.body.appendChild(box);
 }, 500);
 </script>
+    </body>
 </html>

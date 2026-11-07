@@ -152,7 +152,7 @@ setTimeout(function () {
     html += '<br><i>Ponto fora das quadras mapeadas.</i>';
   }
   var box = document.createElement('div');
-  box.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);' +
+  box.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);' +
     'z-index:10000;background:rgba(255,255,255,.95);padding:8px 14px;border-radius:6px;' +
     'box-shadow:0 2px 8px rgba(0,0,0,.4);font:14px sans-serif;max-width:90vw';
   box.innerHTML = html;
@@ -160,19 +160,37 @@ setTimeout(function () {
 }, 500);
 </script>
 <script>
-// área de busca: oeste, norte, leste, sul (ajuste se a cidade crescer)
-var VIEWBOX = '-51.26,-19.62,-51.12,-19.74';
-var CIDADE = 'Paranaíba';
+// ================= BUSCA: quadras (camada do mapa) + endereços (Photon) =================
+// Limites da cidade: oeste, sul, leste, norte (ajuste se a cidade crescer)
+var BBOX = '-51.26,-19.74,-51.12,-19.62';
+var CENTRO = { lat: -19.677, lon: -51.19 };   // dá prioridade a resultados próximos
+var CAMPO_QUADRA = null;                      // null = detecta sozinho; ou escreva o nome do campo, ex.: 'quadra'
+var VALORES_INVALIDOS = ['?', '-', '0', ''];  // valores que não contam como quadra
+var OCULTAR_BUSCA_NATIVA = false;             // true = esconde a caixa de busca antiga do qgis2web
 
+if (OCULTAR_BUSCA_NATIVA) {
+  var st = document.createElement('style');
+  st.textContent = '.gcd-gl-container, .photon-geocoder-autocomplete {display:none !important}';
+  document.head.appendChild(st);
+}
+
+// --- caixa e lista de sugestões ---
 var boxBusca = document.createElement('div');
-boxBusca.style.cssText = 'position:fixed;top:10px;left:50px;z-index:10000;background:#fff;' +
-  'border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.4);display:flex';
+boxBusca.style.cssText = 'position:fixed;top:10px;left:50px;z-index:10000;width:280px;max-width:calc(100vw - 70px);font:14px sans-serif';
 boxBusca.innerHTML =
-  '<input id="inputBusca" type="text" placeholder="Rua ou nº da quadra" ' +
-  'style="border:0;padding:8px;width:240px;font-size:14px;outline:none;border-radius:4px">' +
-  '<button id="btnBusca" style="border:0;background:none;padding:0 10px;cursor:pointer">🔍</button>';
+  '<div style="background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.4);display:flex">' +
+  '<input id="inputBusca" type="text" autocomplete="off" placeholder="Rua ou nº da quadra" ' +
+  'style="border:0;padding:8px;flex:1;font-size:14px;outline:none;border-radius:4px;min-width:0">' +
+  '<button id="btnBusca" style="border:0;background:none;padding:0 10px;cursor:pointer">🔍</button></div>' +
+  '<div id="listaBusca" style="background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.4);' +
+  'margin-top:2px;display:none;max-height:260px;overflow-y:auto"></div>';
 document.body.appendChild(boxBusca);
 
+var inputBusca = document.getElementById('inputBusca');
+var listaBusca = document.getElementById('listaBusca');
+var sugestoes = [];
+
+// --- marcador azul da busca ---
 var fonteBusca = new ol.source.Vector();
 map.addLayer(new ol.layer.Vector({
   source: fonteBusca,
@@ -186,60 +204,146 @@ map.addLayer(new ol.layer.Vector({
   })
 }));
 
-// procura número de quadra nas camadas vetoriais (sem consultar a internet)
-function acharQuadra(q) {
-  var achou = null;
+// --- quadras: lê só a camada de quadras, só o campo do número ---
+function camadasDeQuadras() {
+  var todas = [], achadas = [];
   (function varrer(layers) {
     layers.forEach(function (l) {
-      if (achou) return;
       if (l.getLayers) { varrer(l.getLayers().getArray()); return; }
       var src = l.getSource && l.getSource();
       if (!src || !src.getFeatures || src === fonteBusca) return;
-      src.getFeatures().forEach(function (f) {
-        if (achou) return;
-        var p = f.getProperties();
-        Object.keys(p).forEach(function (k) {
-          if (k !== 'geometry' && p[k] !== null &&
-              String(p[k]).trim().toLowerCase() === q.toLowerCase()) achou = f;
-        });
-      });
+      if (!(l instanceof ol.layer.Vector)) return;
+      todas.push(l);
+      var titulo = String(l.get('title') || '').replace(/<[^>]*>/g, '').toLowerCase();
+      if (titulo.indexOf('quadra') >= 0) achadas.push(l);
     });
   })(map.getLayers().getArray());
-  return achou;
+  return achadas.length ? achadas : todas;   // se o título não bater, usa todas as vetoriais
 }
 
-async function buscar() {
-  var q = document.getElementById('inputBusca').value.trim();
-  if (!q) return;
-  fonteBusca.clear();
+function detectarCampo(feats) {
+  if (CAMPO_QUADRA) return CAMPO_QUADRA;
+  if (!feats.length) return null;
+  var chaves = Object.keys(feats[0].getProperties()).filter(function (k) { return k !== 'geometry'; });
+  var pref = chaves.filter(function (k) { return /quadra|^num|^nº|^n_/i.test(k); });
+  return (pref[0] || chaves[0] || null);
+}
 
-  // textos curtos e sem espaço (ex.: 4022, 137-A) tentam quadra primeiro
-  if (q.length <= 8 && q.indexOf(' ') < 0) {
-    var f = acharQuadra(q);
-    if (f) {
-      map.getView().fit(f.getGeometry().getExtent(), { padding: [80, 80, 80, 80], maxZoom: 19 });
+function quadrasLocais(q) {
+  var ql = q.toLowerCase(), grupos = {};
+  camadasDeQuadras().forEach(function (l) {
+    var feats = l.getSource().getFeatures();
+    var campo = detectarCampo(feats);
+    if (!campo) return;
+    feats.forEach(function (f) {
+      var v = f.get(campo);
+      if (v === null || v === undefined) return;
+      v = String(v).trim();
+      if (VALORES_INVALIDOS.indexOf(v) >= 0) return;
+      if (v.toLowerCase().indexOf(ql) !== 0) return;
+      (grupos[v] = grupos[v] || []).push(f);   // agrupa polígonos de mesmo número
+    });
+  });
+  return Object.keys(grupos)
+    .sort(function (a, b) { return a.localeCompare(b, 'pt', { numeric: true }); })
+    .slice(0, 6)
+    .map(function (v) { return { tipo: 'quadra', rotulo: 'Quadra ' + v, features: grupos[v] }; });
+}
+
+// --- endereços: Photon limitado à cidade ---
+var contador = 0, timer = null;
+async function enderecos(q) {
+  var url = 'https://photon.komoot.io/api/?q=' + encodeURIComponent(q) +
+    '&limit=5&bbox=' + BBOX + '&lat=' + CENTRO.lat + '&lon=' + CENTRO.lon;
+  var d = await (await fetch(url)).json();
+  return d.features.map(function (f) {
+    var p = f.properties;
+    var linha1 = p.name || ((p.street || '') + (p.housenumber ? ', ' + p.housenumber : ''));
+    var linha2 = [p.street && p.name ? p.street : '', p.district, p.city].filter(Boolean).join(' - ');
+    return { tipo: 'endereco', rotulo: linha1, detalhe: linha2,
+             lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] };
+  });
+}
+
+function mostrar(lista) {
+  sugestoes = lista;
+  if (!lista.length) { listaBusca.style.display = 'none'; return; }
+  listaBusca.innerHTML = '';
+  lista.forEach(function (s, i) {
+    var item = document.createElement('div');
+    item.style.cssText = 'padding:8px 10px;cursor:pointer;border-bottom:1px solid #eee';
+    var icone = s.tipo === 'quadra' ? '🟨 ' : (s.tipo === 'endereco' ? '📍 ' : '');
+    item.innerHTML = icone + '<b>' + s.rotulo + '</b>' +
+      (s.detalhe ? '<br><small style="color:#666">' + s.detalhe + '</small>' : '');
+    if (s.tipo === 'aviso') {
+      item.style.cursor = 'default';
+      item.style.color = '#888';
+      listaBusca.appendChild(item);
       return;
     }
-  }
+    item.onmouseenter = function () { item.style.background = '#e8f0fe'; };
+    item.onmouseleave = function () { item.style.background = '#fff'; };
+    item.onclick = function () { escolher(i); };
+    listaBusca.appendChild(item);
+  });
+  listaBusca.style.display = 'block';
+}
 
-  var url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1' +
-    '&countrycodes=br&accept-language=pt-BR' +
-    '&viewbox=' + VIEWBOX + '&bounded=1' +
-    '&q=' + encodeURIComponent(q + ', ' + CIDADE);
-  try {
-    var r = await (await fetch(url)).json();
-    if (!r.length) { alert('Endereço não encontrado na área de Paranaíba.'); return; }
-    var coord = ol.proj.fromLonLat([parseFloat(r[0].lon), parseFloat(r[0].lat)]);
+function escolher(i) {
+  var s = sugestoes[i];
+  if (!s || s.tipo === 'aviso') return;
+  fonteBusca.clear();
+  listaBusca.style.display = 'none';
+  inputBusca.value = s.rotulo.replace(/^Quadra /, '');
+  if (s.tipo === 'quadra') {
+    var ext = ol.extent.createEmpty();
+    s.features.forEach(function (f) { ol.extent.extend(ext, f.getGeometry().getExtent()); });
+    map.getView().fit(ext, { padding: [80, 80, 80, 80], maxZoom: 19 });
+  } else if (s.tipo === 'endereco') {
+    var coord = ol.proj.fromLonLat([s.lon, s.lat]);
     fonteBusca.addFeature(new ol.Feature(new ol.geom.Point(coord)));
     map.getView().setCenter(coord);
     map.getView().setZoom(18);
-  } catch (e) {
-    alert('Erro na busca: ' + e);
   }
 }
-document.getElementById('btnBusca').onclick = buscar;
-document.getElementById('inputBusca').addEventListener('keydown', function (e) {
-  if (e.key === 'Enter') buscar();
+
+async function atualizar() {
+  var q = inputBusca.value.trim();
+  if (q.length < 2) { mostrar([]); return; }
+  var meu = ++contador;
+  var locais = quadrasLocais(q);
+
+  // parece número de quadra (ex.: 4022, 137A, 137-A): busca só nas quadras
+  if (/^\d+-?[a-z]?$/i.test(q)) {
+    mostrar(locais.length ? locais
+      : [{ tipo: 'aviso', rotulo: 'Nenhuma quadra com esse número' }]);
+    return;
+  }
+
+  mostrar(locais);
+  if (q.length < 3) return;
+  try {
+    var ends = await enderecos(q);
+    if (meu !== contador) return;           // descarta resposta antiga
+    mostrar(locais.concat(ends));
+  } catch (e) { /* sem internet: mantém só as quadras */ }
+}
+
+inputBusca.addEventListener('input', function () {
+  clearTimeout(timer);
+  timer = setTimeout(atualizar, 350);       // espera parar de digitar
+});
+inputBusca.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (sugestoes.length) escolher(0); else atualizar();
+  }
+});
+document.getElementById('btnBusca').onclick = function () {
+  if (sugestoes.length) escolher(0); else atualizar();
+};
+document.addEventListener('click', function (e) {
+  if (!boxBusca.contains(e.target)) listaBusca.style.display = 'none';
 });
 </script>
     </body>

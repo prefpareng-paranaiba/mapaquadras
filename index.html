@@ -82,6 +82,26 @@ mosaicos.forEach(function (m) {
     })
   }));
 });
+// ---- nomes de ruas por cima do mosaico (camada só de rótulos, fundo transparente) ----
+var FONTE_ROTULOS = 'google';   // 'google' ou 'carto' (OpenStreetMap)
+var EXTENSAO_ROTULOS = null;    // opcional: limita os rótulos à área do mosaico, [oeste, sul, leste, norte] em graus
+var FONTES_ROTULOS = {
+  google: { url: 'https://mt{0-3}.google.com/vt/lyrs=h&hl=pt-BR&x={x}&y={y}&z={z}', max: 21, attr: null },
+  carto:  { url: 'https://{a-d}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png', max: 20,
+            attr: '© OpenStreetMap contributors © CARTO' }
+};
+(function () {
+  var f = FONTES_ROTULOS[FONTE_ROTULOS];
+  if (!f) return;
+  var opcoes = {
+    title: 'Nomes de ruas',
+    zIndex: 2,                                   // acima do mosaico (1), abaixo das quadras (10)
+    source: new ol.source.XYZ({ url: f.url, maxZoom: f.max, attributions: f.attr })
+  };
+  if (EXTENSAO_ROTULOS) opcoes.extent = ol.proj.transformExtent(EXTENSAO_ROTULOS, 'EPSG:4326', 'EPSG:3857');
+  map.addLayer(new ol.layer.Tile(opcoes));
+})();
+
 // sobe todas as camadas vetoriais (quadras, ruas etc.) acima do mosaico
 function subirVetores(layers) {
   layers.forEach(function (l) {

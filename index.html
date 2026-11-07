@@ -159,5 +159,88 @@ setTimeout(function () {
   document.body.appendChild(box);
 }, 500);
 </script>
+<script>
+// área de busca: oeste, norte, leste, sul (ajuste se a cidade crescer)
+var VIEWBOX = '-51.26,-19.62,-51.12,-19.74';
+var CIDADE = 'Paranaíba';
+
+var boxBusca = document.createElement('div');
+boxBusca.style.cssText = 'position:fixed;top:10px;left:50px;z-index:10000;background:#fff;' +
+  'border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.4);display:flex';
+boxBusca.innerHTML =
+  '<input id="inputBusca" type="text" placeholder="Rua ou nº da quadra" ' +
+  'style="border:0;padding:8px;width:240px;font-size:14px;outline:none;border-radius:4px">' +
+  '<button id="btnBusca" style="border:0;background:none;padding:0 10px;cursor:pointer">🔍</button>';
+document.body.appendChild(boxBusca);
+
+var fonteBusca = new ol.source.Vector();
+map.addLayer(new ol.layer.Vector({
+  source: fonteBusca,
+  zIndex: 9998,
+  style: new ol.style.Style({
+    image: new ol.style.Circle({
+      radius: 8,
+      fill: new ol.style.Fill({ color: '#1e88e5' }),
+      stroke: new ol.style.Stroke({ color: '#fff', width: 3 })
+    })
+  })
+}));
+
+// procura número de quadra nas camadas vetoriais (sem consultar a internet)
+function acharQuadra(q) {
+  var achou = null;
+  (function varrer(layers) {
+    layers.forEach(function (l) {
+      if (achou) return;
+      if (l.getLayers) { varrer(l.getLayers().getArray()); return; }
+      var src = l.getSource && l.getSource();
+      if (!src || !src.getFeatures || src === fonteBusca) return;
+      src.getFeatures().forEach(function (f) {
+        if (achou) return;
+        var p = f.getProperties();
+        Object.keys(p).forEach(function (k) {
+          if (k !== 'geometry' && p[k] !== null &&
+              String(p[k]).trim().toLowerCase() === q.toLowerCase()) achou = f;
+        });
+      });
+    });
+  })(map.getLayers().getArray());
+  return achou;
+}
+
+async function buscar() {
+  var q = document.getElementById('inputBusca').value.trim();
+  if (!q) return;
+  fonteBusca.clear();
+
+  // textos curtos e sem espaço (ex.: 4022, 137-A) tentam quadra primeiro
+  if (q.length <= 8 && q.indexOf(' ') < 0) {
+    var f = acharQuadra(q);
+    if (f) {
+      map.getView().fit(f.getGeometry().getExtent(), { padding: [80, 80, 80, 80], maxZoom: 19 });
+      return;
+    }
+  }
+
+  var url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1' +
+    '&countrycodes=br&accept-language=pt-BR' +
+    '&viewbox=' + VIEWBOX + '&bounded=1' +
+    '&q=' + encodeURIComponent(q + ', ' + CIDADE);
+  try {
+    var r = await (await fetch(url)).json();
+    if (!r.length) { alert('Endereço não encontrado na área de Paranaíba.'); return; }
+    var coord = ol.proj.fromLonLat([parseFloat(r[0].lon), parseFloat(r[0].lat)]);
+    fonteBusca.addFeature(new ol.Feature(new ol.geom.Point(coord)));
+    map.getView().setCenter(coord);
+    map.getView().setZoom(18);
+  } catch (e) {
+    alert('Erro na busca: ' + e);
+  }
+}
+document.getElementById('btnBusca').onclick = buscar;
+document.getElementById('inputBusca').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') buscar();
+});
+</script>
     </body>
 </html>

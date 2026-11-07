@@ -93,13 +93,34 @@ var FONTES_ROTULOS = {
 (function () {
   var f = FONTES_ROTULOS[FONTE_ROTULOS];
   if (!f) return;
+  function criarFonte(def) {
+    return new ol.source.XYZ({ url: def.url, maxZoom: def.max, attributions: def.attr });
+  }
   var opcoes = {
     title: 'Nomes de ruas',
-    zIndex: 2,                                   // acima do mosaico (1), abaixo das quadras (10)
-    source: new ol.source.XYZ({ url: f.url, maxZoom: f.max, attributions: f.attr })
+    zIndex: 11,                                  // acima do mosaico (5) e das quadras (10)
+    source: criarFonte(f)
   };
   if (EXTENSAO_ROTULOS) opcoes.extent = ol.proj.transformExtent(EXTENSAO_ROTULOS, 'EPSG:4326', 'EPSG:3857');
-  map.addLayer(new ol.layer.Tile(opcoes));
+  var camadaRotulos = new ol.layer.Tile(opcoes);
+  map.addLayer(camadaRotulos);
+
+  // se os tiles do Google não carregarem, troca sozinho para o CARTO (OpenStreetMap)
+  var ok = 0, erros = 0, trocou = false;
+  function vigiar(fonte, nome) {
+    fonte.on('tileloadend', function () { ok++; });
+    fonte.on('tileloaderror', function () {
+      erros++;
+      if (!trocou && nome === 'google' && ok === 0 && erros >= 3) {
+        trocou = true;
+        console.warn('Rótulos do Google não carregaram; usando CARTO.');
+        var novo = criarFonte(FONTES_ROTULOS.carto);
+        camadaRotulos.setSource(novo);
+        vigiar(novo, 'carto');
+      }
+    });
+  }
+  vigiar(opcoes.source, FONTE_ROTULOS);
 })();
 
 // sobe todas as camadas vetoriais (quadras, ruas etc.) acima do mosaico
@@ -200,7 +221,7 @@ var boxBusca = document.createElement('div');
 boxBusca.style.cssText = 'position:fixed;top:10px;left:50px;z-index:10000;width:280px;max-width:calc(100vw - 70px);font:14px sans-serif';
 boxBusca.innerHTML =
   '<div style="background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.4);display:flex">' +
-  '<input id="inputBusca" type="text" autocomplete="off" placeholder="Rua ou nº da quadra" ' +
+  '<input id="inputBusca" type="text" autocomplete="off" placeholder="Rua, nº da quadra ou coordenada" ' +
   'style="border:0;padding:8px;flex:1;font-size:14px;outline:none;border-radius:4px;min-width:0">' +
   '<button id="btnBusca" style="border:0;background:none;padding:0 10px;cursor:pointer">🔍</button></div>' +
   '<div id="listaBusca" style="background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.4);' +
@@ -307,7 +328,7 @@ function mostrar(lista) {
   lista.forEach(function (s, i) {
     var item = document.createElement('div');
     item.style.cssText = 'padding:8px 10px;cursor:pointer;border-bottom:1px solid #eee';
-    var icone = s.tipo === 'quadra' ? '🟨 ' : (s.tipo === 'endereco' ? '📍 ' : '');
+    var icone = s.tipo === 'quadra' ? '🟨 ' : (s.tipo === 'endereco' ? '📍 ' : (s.tipo === 'coordenada' ? '🎯 ' : ''));
     item.innerHTML = icone + '<b>' + s.rotulo + '</b>' +
       (s.detalhe ? '<br><small style="color:#666">' + s.detalhe + '</small>' : '');
     if (s.tipo === 'aviso') {
@@ -331,6 +352,7 @@ function escolher(i) {
   fonteDestaque.clear();
   listaBusca.style.display = 'none';
   inputBusca.value = s.rotulo.replace(/^Quadra /, '');
+  if (s.tipo === 'coordenada') { irParaCoordenada(s.lat, s.lon); return; }
   if (s.tipo === 'quadra') {
     var ext = ol.extent.createEmpty();
     s.features.forEach(function (f) { ol.extent.extend(ext, f.getGeometry().getExtent()); });
@@ -344,10 +366,73 @@ function escolher(i) {
   }
 }
 
+// --- coordenada digitada ou colada (formato do Google Maps, link ou graus/minutos/segundos) ---
+function lerCoordenada(texto) {
+  var s = String(texto || '').trim();
+  if (!s) return null;
+  var m, lat, lon;
+
+  // 1) link do Google Maps: @lat,lon  |  !3dlat!4dlon  |  ?q=lat,lon
+  m = s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) ||
+      s.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) ||
+      s.match(/[?&](?:q|ll|query)=(-?\d+\.\d+),(-?\d+\.\d+)/);
+  if (m) { lat = parseFloat(m[1]); lon = parseFloat(m[2]); }
+
+  // 2) graus decimais: -19.677426, -51.199232  (aceita também vírgula decimal)
+  if (lat === undefined && /[.,]\d/.test(s)) {
+    var t = s.replace(/[°º]/g, '');
+    m = t.match(/^(-?\d{1,2}(?:[.,]\d+)?)\s*[,;]?\s+(-?\d{1,3}(?:[.,]\d+)?)$/) ||
+        t.match(/^(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)$/);
+    if (m) { lat = parseFloat(m[1].replace(',', '.')); lon = parseFloat(m[2].replace(',', '.')); }
+  }
+
+  // 3) graus, minutos e segundos: 19°40'38.7"S 51°11'57.2"W
+  if (lat === undefined) {
+    var re = /(\d{1,3})\s*[°º]\s*(\d{1,2})\s*['′’]\s*(\d{1,2}(?:[.,]\d+)?)\s*(?:["″”]|'')?\s*([NSLOEW])/gi;
+    var partes = [], x;
+    while ((x = re.exec(s)) !== null) {
+      var v = parseInt(x[1], 10) + parseInt(x[2], 10) / 60 + parseFloat(x[3].replace(',', '.')) / 3600;
+      if (/[SOW]/i.test(x[4])) v = -v;     // Sul e Oeste são negativos (L = Leste)
+      partes.push(v);
+    }
+    if (partes.length === 2) { lat = partes[0]; lon = partes[1]; }
+  }
+
+  if (lat === undefined || isNaN(lat) || isNaN(lon)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return { lat: lat, lon: lon };
+}
+
+function irParaCoordenada(lat, lon) {
+  fonteBusca.clear();
+  fonteDestaque.clear();
+  listaBusca.style.display = 'none';
+  var coord = ol.proj.fromLonLat([lon, lat]);
+  map.getView().setCenter(coord);
+  map.getView().setZoom(19);
+  if (window.mostrarCoordenada) {
+    window.mostrarCoordenada(coord, true);   // pino laranja + cartão com a quadra, sem copiar
+  } else {
+    fonteBusca.addFeature(new ol.Feature(new ol.geom.Point(coord)));
+  }
+}
+
+function entrar() {
+  var c = lerCoordenada(inputBusca.value);
+  if (c) { irParaCoordenada(c.lat, c.lon); return; }
+  if (sugestoes.length) escolher(0); else atualizar();
+}
+
 async function atualizar() {
   var q = inputBusca.value.trim();
   if (q.length < 2) { mostrar([]); return; }
   var meu = ++contador;
+  var coordTxt = lerCoordenada(q);
+  if (coordTxt) {
+    mostrar([{ tipo: 'coordenada', rotulo: coordTxt.lat.toFixed(6) + ', ' + coordTxt.lon.toFixed(6),
+              detalhe: 'Ir para esta coordenada', lat: coordTxt.lat, lon: coordTxt.lon }]);
+    return;
+  }
   var locais = quadrasLocais(q);
 
   // parece número de quadra (ex.: 4022, 137A, 137-A): busca só nas quadras
@@ -374,12 +459,10 @@ inputBusca.addEventListener('input', function () {
 inputBusca.addEventListener('keydown', function (e) {
   if (e.key === 'Enter') {
     e.preventDefault();
-    if (sugestoes.length) escolher(0); else atualizar();
+    entrar();
   }
 });
-document.getElementById('btnBusca').onclick = function () {
-  if (sugestoes.length) escolher(0); else atualizar();
-};
+document.getElementById('btnBusca').onclick = entrar;
 document.addEventListener('click', function (e) {
   if (!boxBusca.contains(e.target)) listaBusca.style.display = 'none';
 });
@@ -468,7 +551,7 @@ document.addEventListener('click', function (e) {
     return achou;
   }
 
-  function abrir(coord) {
+  function abrir(coord, semCopiar) {
     var ll = ol.proj.toLonLat(coord);
     atual = ll[1].toFixed(6) + ', ' + ll[0].toFixed(6);   // mesmo formato do LatLong do AppSheet
     fonteCoord.clear();
@@ -480,7 +563,7 @@ document.addEventListener('click', function (e) {
     var info = document.getElementById('infoPino');
     if (info) info.style.display = 'none';
     cartao.style.display = 'block';
-    copiar(atual).then(marcarCopiado);                    // copia na hora (se o navegador permitir)
+    if (!semCopiar) copiar(atual).then(marcarCopiado);    // copia na hora (se o navegador permitir)
   }
 
   function fechar() {
@@ -490,6 +573,7 @@ document.addEventListener('click', function (e) {
     if (info) info.style.display = '';
   }
 
+  window.mostrarCoordenada = abrir;                      // usado pela caixa de busca
   btnCopiar.onclick = function () { copiar(atual).then(marcarCopiado); };
   document.getElementById('coordFechar').onclick = fechar;
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') fechar(); });

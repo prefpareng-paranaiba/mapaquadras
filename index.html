@@ -652,7 +652,7 @@ document.addEventListener('click', function (e) {
   var cartao = document.createElement('div');
   cartao.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:10001;' +
     'display:none;background:#fff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);' +
-    'padding:10px 14px;font:14px sans-serif;width:320px;max-width:calc(100vw - 24px)';
+    'padding:10px 14px;font:14px sans-serif;width:400px;max-width:calc(100vw - 24px)';
   cartao.innerHTML =
     '<div style="display:flex;justify-content:space-between;align-items:flex-start">' +
     '<div><div id="coordTexto" style="font-size:16px;font-weight:bold"></div>' +
@@ -661,13 +661,15 @@ document.addEventListener('click', function (e) {
     '<div style="display:flex;gap:6px;margin-top:10px">' +
     '<button id="coordCopiar" style="flex:1;padding:8px 4px;border:0;border-radius:4px;background:#1e88e5;color:#fff;font-size:13px;cursor:pointer">Copiar</button>' +
     '<button id="coordLink" style="flex:1;padding:8px 4px;border:0;border-radius:4px;background:#1e88e5;color:#fff;font-size:13px;cursor:pointer">Copiar link</button>' +
-    '<a id="coordMaps" target="_blank" rel="noopener" style="flex:1;padding:8px 4px;border-radius:4px;background:#eee;color:#222;text-align:center;text-decoration:none;font-size:13px">Google Maps</a></div>';
+    '<a id="coordMaps" target="_blank" rel="noopener" style="flex:1;padding:8px 4px;border-radius:4px;background:#eee;color:#222;text-align:center;text-decoration:none;font-size:13px">Google Maps</a>' +
+    '<a id="coordStreet" target="_blank" rel="noopener" style="flex:1;padding:8px 4px;border-radius:4px;background:#eee;color:#222;text-align:center;text-decoration:none;font-size:13px">Street View</a></div>';
   document.body.appendChild(cartao);
 
   var textoEl = document.getElementById('coordTexto');
   var quadraEl = document.getElementById('coordQuadra');
   var btnCopiar = document.getElementById('coordCopiar');
   var linkMaps = document.getElementById('coordMaps');
+  var linkStreet = document.getElementById('coordStreet');
   var btnLink = document.getElementById('coordLink');
   var atual = '', linkAtual = '';
 
@@ -723,6 +725,8 @@ document.addEventListener('click', function (e) {
     var q = quadraDoPonto(coord);
     quadraEl.textContent = q ? 'Quadra ' + q : 'Fora das quadras mapeadas';
     linkMaps.href = 'https://www.google.com/maps?q=' + ll[1].toFixed(6) + ',' + ll[0].toFixed(6);
+    linkStreet.href = 'https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=' +
+      ll[1].toFixed(6) + ',' + ll[0].toFixed(6);
     // link deste mapa já aberto no ponto (o parâmetro ?ll= é lido pelo script do pino)
     linkAtual = location.origin + location.pathname + '?ll=' + ll[1].toFixed(6) + ',' + ll[0].toFixed(6);
     var info = document.getElementById('infoPino');

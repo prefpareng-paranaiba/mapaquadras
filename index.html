@@ -220,14 +220,15 @@ if (OCULTAR_BUSCA_NATIVA) {
 
 // --- caixa e lista de sugestões ---
 var boxBusca = document.createElement('div');
-boxBusca.style.cssText = 'position:fixed;top:10px;left:50px;z-index:10000;width:280px;max-width:calc(100vw - 70px);font:14px sans-serif';
+boxBusca.style.cssText = 'position:fixed;top:10px;left:50px;z-index:10000;width:330px;max-width:calc(100vw - 62px);font:14px sans-serif';
 boxBusca.innerHTML =
   '<div style="background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.4);display:flex">' +
-  '<input id="inputBusca" type="text" autocomplete="off" placeholder="Rua, nº da quadra ou coordenada" ' +
+  '<input id="inputBusca" type="text" autocomplete="off" placeholder="Rua, quadra ou coordenada" ' +
   'style="border:0;padding:8px;flex:1;font-size:14px;outline:none;border-radius:4px;min-width:0">' +
   '<button id="btnLimpar" title="Limpar busca" aria-label="Limpar busca" style="display:none;border:0;background:none;padding:0 6px;cursor:pointer;font-size:20px;line-height:1;color:#777">×</button>' +
   '<button id="btnBusca" style="border:0;background:none;padding:0 10px;cursor:pointer">🔍</button>' +
-  '<button id="btnMedir" title="Medir distância e área" style="border:0;border-left:1px solid #ddd;background:none;padding:0 10px;cursor:pointer;font-size:16px;border-radius:0 4px 4px 0">📏</button></div>' +
+  '<button id="btnLoc" title="Minha localização" aria-label="Minha localização" style="border:0;border-left:1px solid #ddd;background:none;margin-left:10px;padding:0 13px;min-width:46px;cursor:pointer;font-size:18px">📍</button>' +
+  '<button id="btnMedir" title="Medir distância e área" style="border:0;border-left:1px solid #ddd;background:none;margin-left:10px;padding:0 12px;min-width:44px;cursor:pointer;font-size:16px;border-radius:0 4px 4px 0">📏</button></div>' +
   '<div id="listaBusca" style="background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.4);' +
   'margin-top:2px;display:none;max-height:260px;overflow-y:auto"></div>';
 document.body.appendChild(boxBusca);
@@ -1629,14 +1630,15 @@ document.addEventListener('click', function (e) {
   el.title = 'Rosa dos ventos: toque para voltar ao norte';
   el.setAttribute('role', 'button');
   el.setAttribute('aria-label', 'Voltar o mapa para o norte');
-  el.style.cssText = 'position:fixed;left:8px;top:90px;z-index:10000;width:52px;height:52px;border-radius:50%;' +
-    'background:rgba(255,255,255,.92);box-shadow:0 1px 5px rgba(0,0,0,.4);cursor:pointer;' +
+  el.style.cssText = 'position:fixed;right:10px;top:6px;z-index:10000;width:56px;height:56px;' +
+    'cursor:pointer;' +
     'touch-action:manipulation;-webkit-tap-highlight-color:transparent;user-select:none';
   var img = new Image();
   img.src = window.ROSA_SVG_URL;
   img.alt = '';
   img.draggable = false;
-  img.style.cssText = 'width:100%;height:100%;display:block;pointer-events:none';
+  img.style.cssText = 'width:100%;height:100%;display:block;pointer-events:none;' +
+    'filter:drop-shadow(0 0 2px #fff) drop-shadow(0 0 3px #fff) drop-shadow(0 0 4px rgba(255,255,255,.9))';   // brilho branco no lugar do fundo
   el.appendChild(img);
   document.body.appendChild(el);
 
@@ -1654,18 +1656,7 @@ document.addEventListener('click', function (e) {
     view.animate({ rotation: 0, duration: 300 });
   });
 
-  // fica logo abaixo dos botões de zoom, onde quer que eles estejam
-  function posicionar() {
-    var z = document.getElementById('ctlZoom') || document.querySelector('.ol-zoom');
-    if (!z) return;
-    var r = z.getBoundingClientRect();
-    if (!r.height) return;
-    el.style.left = Math.max(8, Math.round(r.left)) + 'px';
-    el.style.top = Math.round(r.bottom + 10) + 'px';
-  }
-  setTimeout(posicionar, 300);
-  setTimeout(posicionar, 1500);
-  window.addEventListener('resize', posicionar);
+  // (a rosa fica fixa no canto superior direito; com o PDF ao lado, o CSS do painel a desloca para dentro da área do mapa)
 })();
 </script>
 <script>
@@ -1683,7 +1674,8 @@ document.addEventListener('click', function (e) {
   // com o PDF aberto, o painel de medição fica dentro da área do mapa (não atrás do PDF)
   var stPdf = document.createElement('style');
   stPdf.textContent = 'body.pdf-lado #medPainel{left:27vw !important}' +
-    'body.pdf-baixo #medPainel{bottom:calc(46vh + 8px) !important}';
+    'body.pdf-baixo #medPainel{bottom:calc(46vh + 8px) !important}' +
+    'body.pdf-lado #rosaVentos{right:calc(46vw + 10px) !important}';
   document.head.appendChild(stPdf);
 
   function ladoALado() { return window.innerWidth >= 800 && window.innerWidth > window.innerHeight; }
@@ -2016,7 +2008,6 @@ document.addEventListener('click', function (e) {
     '<button id="zMais" aria-label="Aumentar zoom" title="Aumentar zoom">+</button>' +
     '<div id="zNum" title="Nível de zoom atual" style="padding:3px 0;border-top:1px solid #ddd;border-bottom:1px solid #ddd;font-weight:bold;color:#333;background:#f7f7f7"></div>' +
     '<button id="zMenos" aria-label="Diminuir zoom" title="Diminuir zoom">−</button>' +
-    '<button id="btnLoc" aria-label="Minha localização" title="Minha localização" style="border-top:1px solid #ddd;font-size:19px">📍</button>' +
     '<div id="locPrec" style="display:none;padding:2px 0;font-size:10px;color:#555;border-top:1px solid #ddd"></div>';
   document.body.appendChild(el);
 

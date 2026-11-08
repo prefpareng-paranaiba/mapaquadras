@@ -923,6 +923,7 @@ document.addEventListener('click', function (e) {
   // --- painel ---
   var BTN = 'padding:7px 10px;border:0;border-radius:4px;font-size:13px;cursor:pointer;';
   var painel = document.createElement('div');
+  painel.id = 'medPainel';
   painel.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:10002;display:none;' +
     'background:#fff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);padding:10px 12px;font:14px sans-serif;' +
     'width:380px;max-width:calc(100vw - 24px)';
@@ -1641,7 +1642,7 @@ document.addEventListener('click', function (e) {
 
   // fica logo abaixo dos botões de zoom, onde quer que eles estejam
   function posicionar() {
-    var z = document.querySelector('.ol-zoom');
+    var z = document.getElementById('ctlZoom') || document.querySelector('.ol-zoom');
     if (!z) return;
     var r = z.getBoundingClientRect();
     if (!r.height) return;
@@ -1665,6 +1666,11 @@ document.addEventListener('click', function (e) {
 
   // ---------- painel do PDF ao lado do mapa (no celular em pé: embaixo), com girar e zoom ----------
   var painelPDF = null;
+  // com o PDF aberto, o painel de medição fica dentro da área do mapa (não atrás do PDF)
+  var stPdf = document.createElement('style');
+  stPdf.textContent = 'body.pdf-lado #medPainel{left:27vw !important}' +
+    'body.pdf-baixo #medPainel{bottom:calc(46vh + 8px) !important}';
+  document.head.appendChild(stPdf);
 
   function ladoALado() { return window.innerWidth >= 800 && window.innerWidth > window.innerHeight; }
 
@@ -1743,9 +1749,16 @@ document.addEventListener('click', function (e) {
       ref.style.transform = 'translate(' + tx + 'px,' + ty + 'px) rotate(' + rot + 'deg) scale(' + s + ')';
       info.textContent = nw ? Math.round(s / encaixe() * 100) + '%' : '';
     }
-    function encaixe() {
-      var troca = rot % 180 !== 0, W = troca ? nh : nw, H = troca ? nw : nh;
+    function encaixe() {                                            // escala em que a página (girada em qualquer ângulo) cabe no painel
+      var a = rot * Math.PI / 180, c = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a));
+      var W = nw * c + nh * sn, H = nw * sn + nh * c;
       return Math.min(palco.clientWidth / W, palco.clientHeight / H) || 1;
+    }
+    function giraEm(px, py, graus) {                                // gira a vista em torno de um ponto (relativo ao centro do painel)
+      var a = graus * Math.PI / 180, c = Math.cos(a), sn = Math.sin(a);
+      var vx = tx - px, vy = ty - py;
+      tx = px + vx * c - vy * sn; ty = py + vx * sn + vy * c;
+      rot = ((rot + graus) % 360 + 360) % 360;
     }
     function vistaInicial() { if (!nw) return; tx = 0; ty = 0; s = encaixe(); aplicar(); }
     function zoomEm(px, py, novo) {                                 // px, py: ponto fixo, relativo ao centro do painel
@@ -1754,7 +1767,7 @@ document.addEventListener('click', function (e) {
       var k = novo / s;
       tx = px - (px - tx) * k; ty = py - (py - ty) * k; s = novo; aplicar();
     }
-    function girar(d) { if (modo !== 'img' || !nw) return; rot = (rot + d + 360) % 360; vistaInicial(); }
+    function girar(d) { if (modo !== 'img' || !nw) return; rot = (((Math.round(rot / 90) * 90 + d) % 360) + 360) % 360; vistaInicial(); }
 
     function carregar() {
       aviso.textContent = 'Carregando a página…';
@@ -1787,12 +1800,15 @@ document.addEventListener('click', function (e) {
 
     // divide a tela: mapa de um lado, PDF do outro
     function layout() {
+      document.body.classList.remove('pdf-lado', 'pdf-baixo');
       if (ladoALado()) {
         fundo.style.cssText += ';top:0;bottom:0;right:0;left:auto;width:46vw;height:auto';
         mapaEl.style.width = '54vw'; mapaEl.style.height = '100vh';
+        document.body.classList.add('pdf-lado');
       } else {
-        fundo.style.cssText += ';left:0;right:0;bottom:0;top:auto;width:auto;height:50vh';
-        mapaEl.style.width = '100vw'; mapaEl.style.height = '50vh';
+        fundo.style.cssText += ';left:0;right:0;bottom:0;top:auto;width:auto;height:46vh';
+        mapaEl.style.width = '100vw'; mapaEl.style.height = '54vh';
+        document.body.classList.add('pdf-baixo');
       }
       map.updateSize();
       vistaInicial();
@@ -1833,14 +1849,26 @@ document.addEventListener('click', function (e) {
       } else {
         var A = ptrs[ids[0]], B = ptrs[ids[1]];
         var d0 = Math.hypot(A.x - B.x, A.y - B.y), mx0 = (A.x + B.x) / 2, my0 = (A.y + B.y) / 2;
+        var g0 = Math.atan2(B.y - A.y, B.x - A.x);
         p.x = e.clientX; p.y = e.clientY;
         var d1 = Math.hypot(A.x - B.x, A.y - B.y), mx1 = (A.x + B.x) / 2, my1 = (A.y + B.y) / 2;
-        tx += mx1 - mx0; ty += my1 - my0;
+        var g1 = Math.atan2(B.y - A.y, B.x - A.x);
+        var dg = (g1 - g0) * 180 / Math.PI;
+        if (dg > 180) dg -= 360; else if (dg < -180) dg += 360;
+        tx += mx1 - mx0; ty += my1 - my0;                            // arrasta junto com os dedos
         var c = relativo(mx1, my1);
-        zoomEm(c[0], c[1], d0 > 0 ? s * d1 / d0 : s);
+        giraEm(c[0], c[1], dg);                                      // gira com o movimento de pinça
+        zoomEm(c[0], c[1], d0 > 0 ? s * d1 / d0 : s);                // e amplia/reduz
       }
     });
-    function soltar(e) { delete ptrs[e.pointerId]; }
+    function soltar(e) {
+      var eraPinca = Object.keys(ptrs).length >= 2;
+      delete ptrs[e.pointerId];
+      if (eraPinca && nw) {                                          // perto de 0/90/180/270 graus: encaixa reto
+        var alvo = Math.round(rot / 90) * 90, dif = alvo - rot;
+        if (Math.abs(dif) <= 6) { giraEm(0, 0, dif); aplicar(); }
+      }
+    }
     palco.addEventListener('pointerup', soltar);
     palco.addEventListener('pointercancel', soltar);
     palco.addEventListener('wheel', function (e) {
@@ -1861,6 +1889,7 @@ document.addEventListener('click', function (e) {
       fr.src = 'about:blank';
       if (fundo.parentNode) fundo.parentNode.removeChild(fundo);
       mapaEl.style.width = ''; mapaEl.style.height = '';      // volta ao CSS original (100vw x 100vh)
+      document.body.classList.remove('pdf-lado', 'pdf-baixo');
       map.updateSize();
       painelPDF = null;
     }
@@ -1954,6 +1983,122 @@ document.addEventListener('click', function (e) {
     obs.observe(conteudo, { childList: true, subtree: true });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
+})();
+</script>
+<script>
+// ================= ZOOM (+ / − com número) E LOCALIZAÇÃO EM TEMPO REAL =================
+(function () {
+  var view = map.getView();
+  var st = document.createElement('style');
+  st.textContent = '.ol-zoom{display:none !important}' +
+    '#ctlZoom button{display:block;width:38px;height:38px;border:0;background:#fff;color:#333;font-size:22px;line-height:1;cursor:pointer;padding:0}' +
+    '#ctlZoom button:active{background:#e8f0fe}';
+  document.head.appendChild(st);
+
+  var el = document.createElement('div');
+  el.id = 'ctlZoom';
+  el.style.cssText = 'position:fixed;top:10px;left:8px;z-index:10001;width:38px;background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.4);overflow:hidden;font:12px sans-serif;text-align:center';
+  el.innerHTML =
+    '<button id="zMais" aria-label="Aumentar zoom" title="Aumentar zoom">+</button>' +
+    '<div id="zNum" title="Nível de zoom atual" style="padding:3px 0;border-top:1px solid #ddd;border-bottom:1px solid #ddd;font-weight:bold;color:#333;background:#f7f7f7"></div>' +
+    '<button id="zMenos" aria-label="Diminuir zoom" title="Diminuir zoom">−</button>' +
+    '<button id="btnLoc" aria-label="Minha localização" title="Minha localização" style="border-top:1px solid #ddd;font-size:19px">📍</button>' +
+    '<div id="locPrec" style="display:none;padding:2px 0;font-size:10px;color:#555;border-top:1px solid #ddd"></div>';
+  document.body.appendChild(el);
+
+  var zNum = document.getElementById('zNum');
+  function pintarZoom() {
+    var z = view.getZoom();
+    zNum.textContent = (z === undefined) ? '' : String(Math.round(z * 10) / 10);
+  }
+  view.on('change:resolution', pintarZoom);
+  pintarZoom();
+  document.getElementById('zMais').onclick = function () { view.animate({ zoom: view.getZoom() + 1, duration: 200 }); };
+  document.getElementById('zMenos').onclick = function () { view.animate({ zoom: view.getZoom() - 1, duration: 200 }); };
+
+  // ---------- localização em tempo real ----------
+  var btnLoc = document.getElementById('btnLoc'), locPrec = document.getElementById('locPrec');
+  var fonte = new ol.source.Vector();
+  var ponto = new ol.Feature(new ol.geom.Point([0, 0]));
+  var camada = new ol.layer.Vector({
+    source: fonte, interactive: false, zIndex: 9996,
+    style: function (f, res) {
+      var acc = f.get('acc') || 0, lat = f.get('lat') || 0;
+      var r = acc / Math.max(0.2, Math.cos(lat * Math.PI / 180)) / res;
+      var estilos = [];
+      if (r > 6 && r < 800) estilos.push(new ol.style.Style({ image: new ol.style.Circle({
+        radius: r,
+        fill: new ol.style.Fill({ color: 'rgba(30,136,229,0.15)' }),
+        stroke: new ol.style.Stroke({ color: 'rgba(30,136,229,0.45)', width: 1 })
+      }) }));
+      estilos.push(new ol.style.Style({ image: new ol.style.Circle({
+        radius: 9,
+        fill: new ol.style.Fill({ color: '#1e88e5' }),
+        stroke: new ol.style.Stroke({ color: '#ffffff', width: 3 })
+      }) }));
+      return estilos;
+    }
+  });
+  map.addLayer(camada);
+
+  var watchId = null, ativo = false, seguir = false, primeira = true;
+  function aviso(t) { if (typeof avisarBusca === 'function') avisarBusca(t); }
+  function pintarBotao() {
+    btnLoc.style.background = !ativo ? '#fff' : (seguir ? '#1e88e5' : '#bbdefb');
+    btnLoc.style.filter = (ativo && seguir) ? 'brightness(0) invert(1)' : 'none';
+    btnLoc.title = !ativo ? 'Minha localização' : (seguir ? 'Parar localização' : 'Centralizar em mim');
+  }
+  function parar() {
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = null; ativo = false; seguir = false; primeira = true;
+    fonte.clear(); locPrec.style.display = 'none';
+    pintarBotao();
+    window.dispatchEvent(new Event('resize'));
+  }
+  function aoReceber(pos) {
+    var c = ol.proj.fromLonLat([pos.coords.longitude, pos.coords.latitude]);
+    ponto.getGeometry().setCoordinates(c);
+    ponto.set('acc', pos.coords.accuracy || 0);
+    ponto.set('lat', pos.coords.latitude);
+    if (!fonte.getFeatures().length) fonte.addFeature(ponto);
+    ponto.changed();
+    locPrec.textContent = '±' + Math.round(pos.coords.accuracy || 0) + ' m';
+    if (locPrec.style.display !== 'block') { locPrec.style.display = 'block'; window.dispatchEvent(new Event('resize')); }
+    if (primeira) {
+      primeira = false;
+      view.animate({ center: c, zoom: Math.max(view.getZoom(), 19), duration: 500 });
+    } else if (seguir) {
+      view.animate({ center: c, duration: 300 });
+    }
+  }
+  function aoFalhar(err) {
+    if (err.code === 1) { aviso('Localização negada. Libere o acesso à localização nas configurações do navegador.'); parar(); }
+    else if (err.code === 2) aviso('Posição indisponível no momento.');
+    else aviso('Procurando sinal de GPS…');
+  }
+  btnLoc.onclick = function () {
+    if (!navigator.geolocation || !window.isSecureContext) {
+      aviso('A localização só funciona em página segura (https) e em navegador compatível.');
+      return;
+    }
+    if (!ativo) {
+      ativo = true; seguir = true; primeira = true; pintarBotao();
+      aviso('Procurando sua localização…');
+      watchId = navigator.geolocation.watchPosition(aoReceber, aoFalhar,
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+    } else if (!seguir) {                           // estava solto: volta a seguir
+      seguir = true; pintarBotao();
+      var g = ponto.getGeometry().getCoordinates();
+      if (fonte.getFeatures().length) view.animate({ center: g, duration: 300 });
+    } else {                                        // já seguindo: desliga
+      parar();
+    }
+  };
+  // arrastar o mapa solta o "seguir" (o ponto continua atualizando)
+  map.on('pointerdrag', function () { if (ativo && seguir) { seguir = false; pintarBotao(); } });
+  pintarBotao();
+
+  window.dispatchEvent(new Event('resize'));        // reposiciona a rosa dos ventos abaixo do novo controle
 })();
 </script>
     </body>

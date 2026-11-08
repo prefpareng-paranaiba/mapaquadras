@@ -932,7 +932,8 @@ document.addEventListener('click', function (e) {
     '<button id="medArea" style="' + BTN + '">Área</button>' +
     '<button id="medFechar" aria-label="Fechar" style="margin-left:auto;border:0;background:none;font-size:22px;line-height:1;cursor:pointer">×</button></div>' +
     '<div id="medResultado" style="font-size:16px;font-weight:bold;min-height:22px"></div>' +
-    '<div id="medDetalhe" style="color:#555;font-size:13px;margin:2px 0 8px"></div>' +
+    '<div id="medDetalhe" style="color:#555;font-size:13px;margin:2px 0 2px"></div>' +
+    '<div id="medCentro" style="color:#555;font-size:13px;margin:0 0 8px"></div>' +
     '<div style="display:flex;gap:6px">' +
     '<button id="medDesfazer" style="' + BTN + 'background:#eee;flex:1">Desfazer</button>' +
     '<button id="medLimpar" style="' + BTN + 'background:#eee;flex:1">Limpar</button>' +
@@ -944,6 +945,7 @@ document.addEventListener('click', function (e) {
 
   var elResultado = document.getElementById('medResultado');
   var elDetalhe = document.getElementById('medDetalhe');
+  var elCentro = document.getElementById('medCentro');
   var btnDist = document.getElementById('medDist');
   var btnArea = document.getElementById('medArea');
   var btnCopiar = document.getElementById('medCopiar');
@@ -959,6 +961,7 @@ document.addEventListener('click', function (e) {
   function atualizarPainel() {
     var n = pts.length;
     textoCopia = '';
+    elCentro.textContent = '';
     if (modo === 'dist') {
       if (n < 2) {
         elResultado.textContent = 'Toque no mapa para marcar os pontos';
@@ -981,6 +984,8 @@ document.addEventListener('click', function (e) {
         elResultado.textContent = 'Área: ' + fmtArea(ar);
         elDetalhe.textContent = 'Perímetro: ' + fmtDist(per) + ' · ' + n + ' pontos';
         textoCopia = 'Área: ' + fmtArea(ar) + ' | Perímetro: ' + fmtDist(per);
+        var cen = centroideLatLon(pts);
+        if (cen) { elCentro.textContent = 'Centro: ' + fmtCentro(cen); textoCopia += ' | Centro: ' + fmtCentroPonto(cen); }
       }
     }
     btnCopiar.style.opacity = textoCopia ? '1' : '.5';
@@ -1099,17 +1104,15 @@ document.addEventListener('click', function (e) {
     return [(c[0] + HALF_MERC) * k, (HALF_MERC - c[1]) * k];
   }
 
-  // Se os tiles do Google forem bloqueados pelo navegador (CORS), publique o proxy do README e cole a URL aqui.
-  // Ex.: 'https://meu-proxy.workers.dev'  (o proxy recebe ?z=..&x=..&y=.. e devolve o tile com CORS liberado)
-  var PROXY_TILES_GOOGLE = '';
+  function urlGoogle(lyrs, z, x, y) {
+    return 'https://mt' + ((x + y) % 4) + '.google.com/vt/lyrs=' + lyrs + '&hl=pt-BR&x=' + x + '&y=' + y + '&z=' + z;
+  }
 
+  // ordem de desenho: base (Google satélite; Esri se o Google falhar) -> mosaico de drone -> nomes de ruas do Google
   function fontesDeImagem() {
     var bases = [{
       nome: 'Google Satélite', min: 0, max: 20, cors: true,
-      url: function (z, x, y) {
-        if (PROXY_TILES_GOOGLE) return PROXY_TILES_GOOGLE + '?z=' + z + '&x=' + x + '&y=' + y;
-        return 'https://mt' + ((x + y) % 4) + '.google.com/vt/lyrs=s&hl=pt-BR&x=' + x + '&y=' + y + '&z=' + z;
-      }
+      url: function (z, x, y) { return urlGoogle('s', z, x, y); }
     }, {
       nome: 'Esri World Imagery', min: 0, max: 18, cors: true,
       url: function (z, x, y) { return 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/' + z + '/' + y + '/' + x; }
@@ -1121,7 +1124,11 @@ document.addEventListener('click', function (e) {
         url: function (z, x, y) { return m.pasta + '/' + z + '/' + x + '/' + (((1 << z) - 1) - y) + '.png'; }
       });
     });
-    return { bases: bases, drone: drone };
+    var rotulos = [{
+      nome: 'Nomes de ruas', min: 0, max: 20, cors: true, semCredito: true,
+      url: function (z, x, y) { return urlGoogle('h', z, x, y); }
+    }];
+    return { bases: bases, drone: drone, rotulos: rotulos };
   }
 
   function prepararFonte(f, zt, bx0, bx1, by0, by1) {
@@ -1166,6 +1173,30 @@ document.addEventListener('click', function (e) {
     return null;
   }
 
+  // centróide do polígono (média ponderada pela área); devolve [lat, lon] ou null
+  function centroideLatLon(pontos) {
+    if (!pontos || pontos.length < 3) return null;
+    var ox = pontos[0][0], oy = pontos[0][1], A = 0, cx = 0, cy = 0, n = pontos.length;
+    for (var i = 0; i < n; i++) {
+      var x0 = pontos[i][0] - ox, y0 = pontos[i][1] - oy;
+      var x1 = pontos[(i + 1) % n][0] - ox, y1 = pontos[(i + 1) % n][1] - oy;
+      var c = x0 * y1 - x1 * y0;
+      A += c; cx += (x0 + x1) * c; cy += (y0 + y1) * c;
+    }
+    var m;
+    if (Math.abs(A) < 1e-9) {                       // pontos alinhados: usa a média simples
+      var sx = 0, sy = 0;
+      pontos.forEach(function (p) { sx += p[0]; sy += p[1]; });
+      m = [sx / n, sy / n];
+    } else {
+      m = [ox + cx / (3 * A), oy + cy / (3 * A)];
+    }
+    var ll = ol.proj.toLonLat(m);
+    return [ll[1], ll[0]];
+  }
+  function fmtCentro(c) { return c[0].toFixed(6).replace('.', ',') + ', ' + c[1].toFixed(6).replace('.', ','); }
+  function fmtCentroPonto(c) { return c[0].toFixed(6) + ', ' + c[1].toFixed(6); }   // formato que o Google Maps entende
+
   async function montarImagem(pontos, modoUsado) {
     var rot = map.getView().getRotation() || 0;          // a imagem sai com a mesma orientação do mapa na tela
     var cos = Math.cos(rot), sin = Math.sin(rot);
@@ -1189,7 +1220,7 @@ document.addEventListener('click', function (e) {
     var qcx = (minx + maxx) / 2, qcy = (miny + maxy) / 2;
     var Cx = qcx * cos + qcy * sin, Cy = -qcx * sin + qcy * cos;   // centro da imagem no mundo (zoom 20)
 
-    var W = 1080, S = W / w2, Hm = Math.round(h2 * S), F = Math.round(W * 0.19);
+    var W = 1080, S = W / w2, Hm = Math.round(h2 * S), F = Math.round(W * (area ? 0.245 : 0.19));
     var k = W / 900;
     var canvas = document.createElement('canvas');
     canvas.width = W; canvas.height = Hm + F;
@@ -1214,7 +1245,7 @@ document.addEventListener('click', function (e) {
       if (cb.tiles.some(function (t) { return t.im; })) { camadas.push(cb); break; }
       console.warn('Sem imagens de', fontes.bases[bi].nome, '- tentando a próxima fonte.');
     }
-    camadas = camadas.concat(await Promise.all(fontes.drone.map(function (f) { return prepararFonte(f, zt, bx0, bx1, by0, by1); })));
+    camadas = camadas.concat(await Promise.all(fontes.drone.concat(fontes.rotulos).map(function (f) { return prepararFonte(f, zt, bx0, bx1, by0, by1); })));
     var rosa = await rosaP;
 
     // desenha os tiles em coordenadas relativas ao centro (evita perder precisão com números enormes)
@@ -1231,7 +1262,7 @@ document.addEventListener('click', function (e) {
         algum = true;
         ctx.drawImage(t.im, t.x * cam.T - Cx, t.y * cam.T - Cy, cam.T + ov, cam.T + ov);
       });
-      if (algum) usados.push(cam.f.nome);
+      if (algum && !cam.f.semCredito) usados.push(cam.f.nome);
     });
     ctx.restore();
 
@@ -1327,15 +1358,20 @@ document.addEventListener('click', function (e) {
     ctx.fillRect(0, Hm, W, 5 * k);
     ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
     var pl = Math.round(W * 0.035);
+    var centro = area ? centroideLatLon(pontos) : null;
+    var linhas = centro ? [0.29, 0.49, 0.68, 0.89] : [0.36, 0.62, 0.86];
     ctx.fillStyle = '#111111';
     ctx.font = 'bold ' + Math.round(W * 0.04) + 'px Arial, Helvetica, sans-serif';
-    ctx.fillText(l1, pl, Hm + F * 0.36);
+    ctx.fillText(l1, pl, Hm + F * linhas[0]);
     ctx.fillStyle = '#222222';
     ctx.font = Math.round(W * 0.028) + 'px Arial, Helvetica, sans-serif';
-    ctx.fillText(l2, pl, Hm + F * 0.62);
+    ctx.fillText(l2, pl, Hm + F * linhas[1]);
+    if (centro) {
+      ctx.fillText('Centro: ' + fmtCentro(centro), pl, Hm + F * linhas[2]);
+    }
     ctx.fillStyle = '#666666';
     ctx.font = Math.round(W * 0.023) + 'px Arial, Helvetica, sans-serif';
-    ctx.fillText(l3, pl, Hm + F * 0.86);
+    ctx.fillText(l3, pl, Hm + F * linhas[linhas.length - 1]);
 
     return await new Promise(function (resolve, reject) {
       try {
@@ -1381,7 +1417,8 @@ document.addEventListener('click', function (e) {
       linha.appendChild(bt);
       return bt;
     }
-    if (navigator.canShare && navigator.canShare({ files: [arquivo] })) {
+    var toque = !!(window.matchMedia && matchMedia('(pointer:coarse)').matches);   // botão verde só no celular
+    if (toque && navigator.canShare && navigator.canShare({ files: [arquivo] })) {
       botao('📤 Compartilhar', '#25d366', async function () {
         try { await navigator.share({ files: [arquivo], title: 'Medição', text: texto }); }
         catch (e) { if (!e || e.name !== 'AbortError') msg.textContent = 'Não foi possível abrir o compartilhamento.'; }
@@ -1446,7 +1483,8 @@ document.addEventListener('click', function (e) {
       aviso('Para gerar a imagem, abra o mapa por um servidor (http://localhost:8000) ou pelo site publicado, não direto pelo arquivo.');
       return;
     }
-    var chave = chaveAtual(), texto = textoCopia;
+    var chave = chaveAtual(), texto = textoCopia, cc = (modo === 'area') ? centroideLatLon(pts) : null;
+    if (cc) texto += '\nCentro: ' + fmtCentro(cc) + '\nhttps://www.google.com/maps?q=' + fmtCentroPonto(cc).replace(' ', '');
     var blob = (imgCache && imgCache.chave === chave) ? imgCache.blob : null;
     if (!blob) {
       gerando = true;
@@ -1613,6 +1651,217 @@ document.addEventListener('click', function (e) {
   setTimeout(posicionar, 300);
   setTimeout(posicionar, 1500);
   window.addEventListener('resize', posicionar);
+})();
+</script>
+<script>
+// ================= POPUP DA QUADRA: título "Quadra N", sem campos internos, PDF do Drive em visualizador próprio =================
+(function () {
+  var MOSTRAR_ROTULO_PDF = '📄 Ver PDF da quadra';
+
+  function idDrive(url) {
+    var m = /\/d\/([\w-]{10,})/.exec(url) || /[?&]id=([\w-]{10,})/.exec(url);
+    return m ? m[1] : null;
+  }
+
+  // ---------- painel do PDF ao lado do mapa (no celular em pé: embaixo), com girar e zoom ----------
+  var painelPDF = null;
+
+  function ladoALado() { return window.innerWidth >= 800 && window.innerWidth > window.innerHeight; }
+
+  // posição de onde o popup foi aberto e, se achar, a quadra que contém esse ponto
+  function alvoDaQuadra() {
+    var pos = null;
+    map.getOverlays().getArray().forEach(function (o) {
+      var e = o.getElement && o.getElement();
+      if (e && e.id === 'popup' && o.getPosition()) pos = o.getPosition();
+    });
+    if (!pos) return null;
+    var ext = null;
+    try {
+      if (typeof camadasDeQuadras === 'function') {
+        camadasDeQuadras().some(function (l) {
+          return l.getSource().getFeatures().some(function (f) {
+            var g = f.getGeometry();
+            if (g && g.intersectsCoordinate && g.intersectsCoordinate(pos)) { ext = g.getExtent(); return true; }
+            return false;
+          });
+        });
+      }
+    } catch (e) { console.warn(e); }
+    return { pos: pos, ext: ext };
+  }
+
+  function centralizarQuadra() {
+    var alvo = alvoDaQuadra();
+    if (!alvo) return;
+    var v = map.getView();
+    if (alvo.ext) v.fit(alvo.ext, { size: map.getSize(), padding: [50, 50, 50, 50], maxZoom: v.getZoom(), duration: 250 });
+    else v.animate({ center: alvo.pos, duration: 250 });
+  }
+
+  function abrirVisualizador(id, original, titulo) {
+    if (painelPDF) { painelPDF.trocar(id, original, titulo); return; }
+    var rot = 0, z = 1;
+    var mapaEl = document.getElementById('map');
+    var fundo = document.createElement('div');
+    fundo.style.cssText = 'position:fixed;z-index:10020;background:#222;display:flex;flex-direction:column;box-shadow:0 0 12px rgba(0,0,0,.5)';
+    var barra = document.createElement('div');
+    barra.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px;background:#222;color:#fff;font:14px sans-serif';
+    function bt(txt, fn, tit) {
+      var b = document.createElement('button');
+      b.textContent = txt; b.title = tit || txt;
+      b.style.cssText = 'padding:7px 11px;border:0;border-radius:6px;background:#444;color:#fff;font-size:16px;cursor:pointer';
+      b.onclick = fn; barra.appendChild(b); return b;
+    }
+    var rotulo = document.createElement('strong');
+    rotulo.style.cssText = 'margin-right:4px';
+    barra.appendChild(rotulo);
+    var info = document.createElement('span');
+    info.style.cssText = 'min-width:46px;text-align:center';
+    var palco = document.createElement('div');
+    palco.style.cssText = 'flex:1;overflow:auto;position:relative;background:#555;-webkit-overflow-scrolling:touch';
+    var caixa = document.createElement('div');
+    caixa.style.cssText = 'position:relative';
+    var fr = document.createElement('iframe');
+    fr.allow = 'fullscreen';
+    fr.style.cssText = 'position:absolute;left:0;top:0;border:0;background:#fff;transform-origin:0 0';
+    caixa.appendChild(fr); palco.appendChild(caixa);
+
+    function aplicar() {
+      var pw = palco.clientWidth, ph = palco.clientHeight;
+      var troca = rot % 180 !== 0;
+      var w = troca ? ph : pw, h = troca ? pw : ph;
+      fr.style.width = w + 'px'; fr.style.height = h + 'px';
+      var sw = w * z, sh = h * z, tx = 0, ty = 0;
+      if (rot === 90) tx = sh; else if (rot === 180) { tx = sw; ty = sh; } else if (rot === 270) ty = sw;
+      fr.style.transform = 'translate(' + tx + 'px,' + ty + 'px) rotate(' + rot + 'deg) scale(' + z + ')';
+      caixa.style.width = (troca ? sh : sw) + 'px';
+      caixa.style.height = (troca ? sw : sh) + 'px';
+      info.textContent = Math.round(z * 100) + '%';
+    }
+    // divide a tela: mapa de um lado, PDF do outro
+    function layout() {
+      if (ladoALado()) {
+        fundo.style.cssText += ';top:0;bottom:0;right:0;left:auto;width:46vw;height:auto';
+        mapaEl.style.width = '54vw'; mapaEl.style.height = '100vh';
+      } else {
+        fundo.style.cssText += ';left:0;right:0;bottom:0;top:auto;width:auto;height:50vh';
+        mapaEl.style.width = '100vw'; mapaEl.style.height = '50vh';
+      }
+      map.updateSize();
+      aplicar();
+    }
+
+    bt('⟲', function () { rot = (rot + 270) % 360; aplicar(); }, 'Girar para a esquerda');
+    bt('⟳', function () { rot = (rot + 90) % 360; aplicar(); }, 'Girar para a direita');
+    bt('−', function () { z = Math.max(0.5, +(z - 0.25).toFixed(2)); aplicar(); }, 'Diminuir');
+    barra.appendChild(info);
+    bt('+', function () { z = Math.min(4, +(z + 0.25).toFixed(2)); aplicar(); }, 'Aumentar');
+    bt('Ajustar', function () { z = 1; rot = 0; aplicar(); palco.scrollTo(0, 0); }, 'Voltar ao tamanho original');
+    var abrir = document.createElement('a');
+    abrir.textContent = 'Abrir em nova aba'; abrir.target = '_blank'; abrir.rel = 'noopener';
+    abrir.style.cssText = 'color:#8ec5ff;font-size:13px;margin-left:4px';
+    barra.appendChild(abrir);
+    var fechar = bt('✕', function () { sair(); }, 'Fechar');
+    fechar.style.marginLeft = 'auto';
+
+    function sair() {
+      window.removeEventListener('resize', layout);
+      document.removeEventListener('keydown', tecla);
+      if (fundo.parentNode) fundo.parentNode.removeChild(fundo);
+      mapaEl.style.width = ''; mapaEl.style.height = '';      // volta ao CSS original (100vw x 100vh)
+      map.updateSize();
+      painelPDF = null;
+    }
+    function tecla(e) { if (e.key === 'Escape') sair(); }
+
+    function trocar(novoId, original, tit) {
+      rot = 0; z = 1;
+      rotulo.textContent = tit || 'PDF';
+      abrir.href = original;
+      fr.src = 'https://drive.google.com/file/d/' + novoId + '/preview';
+      aplicar();
+      centralizarQuadra();
+    }
+    painelPDF = { trocar: trocar };
+
+    window.addEventListener('resize', layout);
+    document.addEventListener('keydown', tecla);
+    fundo.appendChild(barra); fundo.appendChild(palco);
+    document.body.appendChild(fundo);
+    layout();
+    trocar(id, original, titulo);
+  }
+
+  // ---------- ajustes no conteúdo do popup do QGIS2Web ----------
+  function textos(raiz) {
+    var lista = [], w = document.createTreeWalker(raiz, NodeFilter.SHOW_TEXT, null);
+    while (w.nextNode()) lista.push(w.currentNode);
+    return lista;
+  }
+  function removerLinha(no) {
+    var el = no.nodeType === 3 ? no.parentNode : no;
+    var tr = el.closest ? el.closest('tr') : null;
+    (tr || el).parentNode.removeChild(tr || el);
+  }
+
+  function ajustar(conteudo) {
+    // número da quadra: célula ao lado do rótulo "Quadra"
+    var numero = null;
+    textos(conteudo).some(function (t) {
+      if (t.data.trim() !== 'Quadra') return false;
+      var cel = t.parentNode.closest ? t.parentNode.closest('td,th') : null;
+      if (cel && cel.nextElementSibling) { numero = cel.nextElementSibling.textContent.trim(); return !!numero; }
+      return false;
+    });
+    if (!numero) {
+      var m = /\bQuadra\s+(\S+)/.exec(conteudo.innerText || '');
+      if (m) numero = m[1];
+    }
+
+    // 1) título
+    textos(conteudo).forEach(function (t) {
+      if (/^\s*Quadras NOVO\b/i.test(t.data)) t.data = 'Quadra' + (numero ? ' ' + numero : '');
+    });
+
+    // 2) endereço interno (10.1.1.4...) e a palavra "Disponivel"
+    Array.prototype.slice.call(conteudo.querySelectorAll('a')).forEach(function (a) {
+      if (/10\.1\.1\.4/.test(a.getAttribute('href') || '') || /10\.1\.1\.4/.test(a.textContent)) removerLinha(a);
+    });
+    textos(conteudo).forEach(function (t) {
+      if (!t.parentNode) return;
+      if (/^\s*10\.1\.1\.4/.test(t.data) || /^\s*dispon[ií]vel\s*$/i.test(t.data)) {
+        if (t.parentNode === conteudo) conteudo.removeChild(t); else removerLinha(t);
+      }
+    });
+
+    // 3) link do Drive: abre o visualizador em vez de outra guia
+    Array.prototype.slice.call(conteudo.querySelectorAll('a[href*="drive.google.com"]')).forEach(function (a) {
+      if (a.getAttribute('data-pdf')) return;
+      var href = a.getAttribute('href'), id = idDrive(href);
+      a.setAttribute('data-pdf', '1');
+      if (!id) return;                                   // formato desconhecido: deixa o link normal
+      a.textContent = MOSTRAR_ROTULO_PDF;
+      a.removeAttribute('target');
+      a.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        abrirVisualizador(id, href, 'Quadra' + (numero ? ' ' + numero : ''));
+      });
+    });
+  }
+
+  function iniciar() {
+    var conteudo = document.getElementById('popup-content');
+    if (!conteudo) return;
+    var obs = new MutationObserver(function () {
+      obs.disconnect();
+      try { ajustar(conteudo); } catch (e) { console.warn('Ajuste do popup:', e); }
+      obs.observe(conteudo, { childList: true, subtree: true, characterData: true });
+      obs.takeRecords();
+    });
+    obs.observe(conteudo, { childList: true, subtree: true });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
 })();
 </script>
     </body>

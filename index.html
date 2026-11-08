@@ -861,12 +861,14 @@ document.addEventListener('click', function (e) {
   }
 
   var modo = 'dist', pts = [], ativo = false, modify = null, textoCopia = '';
+  var apagando = false;      // modo "apagar ponto": o próximo toque num ponto o remove
   window.medindo = false;
 
   // estilos extras: esconde o balão do qgis2web e usa mira enquanto mede
   var st = document.createElement('style');
   st.textContent = '.medindo .ol-popup{display:none !important}' +
-    '.medindo #map, .medindo #map .ol-viewport{cursor:crosshair !important}';
+    '.medindo #map, .medindo #map .ol-viewport{cursor:crosshair !important}' +
+    '.apagando #map, .apagando #map .ol-viewport{cursor:pointer !important}';
   document.head.appendChild(st);
 
   // --- desenho ---
@@ -885,13 +887,14 @@ document.addEventListener('click', function (e) {
     }
     var cs = t === 'Polygon' ? g.getCoordinates()[0] : (t === 'LineString' ? g.getCoordinates() : [g.getCoordinates()]);
     var nv = t === 'Polygon' ? cs.length - 1 : cs.length;
+    var rv = apagando ? 9 : 6, corV = apagando ? '#e53935' : COR;   // vermelhos e maiores enquanto apaga
     for (var i = 0; i < nv; i++) {
       out.push(new ol.style.Style({
         geometry: new ol.geom.Point(cs[i]),
         image: new ol.style.Circle({
-          radius: 6,
+          radius: rv,
           fill: new ol.style.Fill({ color: '#ffffff' }),
-          stroke: new ol.style.Stroke({ color: COR, width: 3 })
+          stroke: new ol.style.Stroke({ color: corV, width: 3 })
         })
       }));
     }
@@ -922,7 +925,7 @@ document.addEventListener('click', function (e) {
   var painel = document.createElement('div');
   painel.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:10002;display:none;' +
     'background:#fff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);padding:10px 12px;font:14px sans-serif;' +
-    'width:340px;max-width:calc(100vw - 24px)';
+    'width:380px;max-width:calc(100vw - 24px)';
   painel.innerHTML =
     '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">' +
     '<button id="medDist" style="' + BTN + '">Distância</button>' +
@@ -933,7 +936,10 @@ document.addEventListener('click', function (e) {
     '<div style="display:flex;gap:6px">' +
     '<button id="medDesfazer" style="' + BTN + 'background:#eee;flex:1">Desfazer</button>' +
     '<button id="medLimpar" style="' + BTN + 'background:#eee;flex:1">Limpar</button>' +
-    '<button id="medCopiar" style="' + BTN + 'background:#1e88e5;color:#fff;flex:1">Copiar</button></div>';
+    '<button id="medCopiar" style="' + BTN + 'background:#1e88e5;color:#fff;flex:1">Copiar</button></div>' +
+    '<div style="display:flex;gap:6px;margin-top:6px">' +
+    '<button id="medApagar" style="' + BTN + 'background:#eee;flex:1">🗑 Apagar ponto</button>' +
+    '<button id="medCompartilhar" style="' + BTN + 'background:#25d366;color:#fff;flex:2">📤 Compartilhar imagem</button></div>';
   document.body.appendChild(painel);
 
   var elResultado = document.getElementById('medResultado');
@@ -942,6 +948,8 @@ document.addEventListener('click', function (e) {
   var btnArea = document.getElementById('medArea');
   var btnCopiar = document.getElementById('medCopiar');
   var btnMedir = document.getElementById('btnMedir');
+  var btnShare = document.getElementById('medCompartilhar');
+  var btnApagar = document.getElementById('medApagar');
 
   function pintarAbas() {
     btnDist.style.cssText = BTN + (modo === 'dist' ? 'background:#e91e63;color:#fff' : 'background:#eee');
@@ -976,6 +984,22 @@ document.addEventListener('click', function (e) {
       }
     }
     btnCopiar.style.opacity = textoCopia ? '1' : '.5';
+    if (btnShare) { btnShare.style.opacity = textoCopia ? '1' : '.5'; if (!gerando) rotuloBtn(); }
+    if (apagando) {
+      elResultado.textContent = 'Toque no ponto que quer apagar';
+      elDetalhe.textContent = 'Toque em "Cancelar" para sair';
+    }
+  }
+
+  // apagar um ponto específico: toque no botão e depois no ponto que quer remover
+  function modoApagar(on) {
+    apagando = !!on;
+    document.body.classList.toggle('apagando', apagando);
+    btnApagar.textContent = apagando ? '✖ Cancelar' : '🗑 Apagar ponto';
+    btnApagar.style.cssText = BTN + (apagando ? 'background:#e53935;color:#fff;flex:1' : 'background:#eee;flex:1');
+    if (modify) modify.setActive(!apagando);     // enquanto apaga, um toque na linha não cria ponto novo
+    fonteMedir.changed();                        // redesenha os pontos (vermelhos enquanto apaga)
+    atualizarPainel();
   }
 
   function desenhar() {
@@ -1016,6 +1040,7 @@ document.addEventListener('click', function (e) {
   }
 
   function desligar() {
+    if (apagando) modoApagar(false);
     ativo = false;
     window.medindo = false;
     document.body.classList.remove('medindo');
@@ -1033,7 +1058,11 @@ document.addEventListener('click', function (e) {
   btnDist.onclick = function () { modo = 'dist'; pintarAbas(); desenhar(); };
   btnArea.onclick = function () { modo = 'area'; pintarAbas(); desenhar(); };
   document.getElementById('medDesfazer').onclick = function () { pts.pop(); desenhar(); };
-  document.getElementById('medLimpar').onclick = function () { pts = []; desenhar(); };
+  document.getElementById('medLimpar').onclick = function () { if (apagando) modoApagar(false); pts = []; desenhar(); };
+  btnApagar.onclick = function () {
+    if (!apagando && !pts.length) { aviso('Não há pontos para apagar.'); return; }
+    modoApagar(!apagando);
+  };
   btnCopiar.onclick = function () {
     if (!textoCopia || !window.copiarTexto) return;
     window.copiarTexto(textoCopia).then(function (ok) {
@@ -1042,9 +1071,366 @@ document.addEventListener('click', function (e) {
     });
   };
 
+  // ================= COMPARTILHAR COMO IMAGEM (recorte da medição + resultado + rosa dos ventos) =================
+  // A imagem é montada à parte, sem copiar a tela: busca os tiles do recorte (mosaico de drone + Esri de fundo),
+  // desenha a medição por cima e acrescenta uma faixa com os resultados. Assim não depende do que está na tela
+  // e não esbarra no bloqueio de captura dos tiles do Google.
+  var imgCache = null, gerando = false;
+  var ROTULO_BTN = '📤 Compartilhar imagem';
+
+  function aviso(t) { if (typeof avisarBusca === 'function') avisarBusca(t); }
+  function rotuloBtn(t) { if (btnShare) btnShare.textContent = t || ROTULO_BTN; }
+
+  function carregarImg(url, cors) {
+    return new Promise(function (resolve) {
+      var im = new Image(), fim = false;
+      function acabou(v) { if (!fim) { fim = true; resolve(v); } }
+      if (cors) im.crossOrigin = 'anonymous';   // se o servidor não permitir, falha limpo em vez de "sujar" a imagem
+      im.onload = function () { acabou(im); };
+      im.onerror = function () { acabou(null); };
+      setTimeout(function () { acabou(null); }, 15000);
+      im.src = url;
+    });
+  }
+
+  var HALF_MERC = 20037508.342789244;
+  function mundo20(c) {                      // coordenada do mapa (EPSG:3857) -> pixel do mundo no zoom 20
+    var k = 256 * Math.pow(2, 20) / (2 * HALF_MERC);
+    return [(c[0] + HALF_MERC) * k, (HALF_MERC - c[1]) * k];
+  }
+
+  function fontesDeImagem() {
+    var lista = [{
+      nome: 'Esri World Imagery', min: 0, max: 18, cors: true,
+      url: function (z, x, y) { return 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/' + z + '/' + y + '/' + x; }
+    }];
+    (typeof mosaicos !== 'undefined' ? mosaicos : []).forEach(function (m) {
+      lista.push({
+        nome: m.nome, min: m.minZoom, max: m.maxZoom, cors: false,
+        url: function (z, x, y) { return m.pasta + '/' + z + '/' + x + '/' + (((1 << z) - 1) - y) + '.png'; }
+      });
+    });
+    return lista;
+  }
+
+  function prepararFonte(f, zt, bx0, bx1, by0, by1) {
+    if (zt < f.min) return Promise.resolve({ f: f, T: 0, tiles: [] });
+    var zn = Math.min(f.max, zt);
+    var T = 256 * Math.pow(2, 20 - zn), n = Math.pow(2, zn);
+    var x0 = Math.max(0, Math.floor(bx0 / T)), x1 = Math.min(n - 1, Math.floor(bx1 / T));
+    var y0 = Math.max(0, Math.floor(by0 / T)), y1 = Math.min(n - 1, Math.floor(by1 / T));
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > 200) return Promise.resolve({ f: f, T: T, tiles: [] });
+    var tarefas = [];
+    for (var x = x0; x <= x1; x++) {
+      for (var y = y0; y <= y1; y++) {
+        tarefas.push((function (x, y) {
+          return carregarImg(f.url(zn, x, y), f.cors).then(function (im) { return { im: im, x: x, y: y }; });
+        })(x, y));
+      }
+    }
+    return Promise.all(tarefas).then(function (tiles) { return { f: f, T: T, tiles: tiles }; });
+  }
+
+  // quadra em que a medição está (usa as funções da busca, se existirem)
+  function quadraDaMedicao(pontos) {
+    if (typeof camadasDeQuadras !== 'function' || typeof detectarCampo !== 'function') return null;
+    var mx = 0, my = 0;
+    pontos.forEach(function (p) { mx += p[0]; my += p[1]; });
+    var cands = [[mx / pontos.length, my / pontos.length]].concat(pontos);
+    var layers = camadasDeQuadras();
+    for (var c = 0; c < cands.length; c++) {
+      for (var li = 0; li < layers.length; li++) {
+        var feats = layers[li].getSource().getFeatures();
+        var campo = detectarCampo(feats);
+        if (!campo) continue;
+        for (var fi = 0; fi < feats.length; fi++) {
+          var g = feats[fi].getGeometry();
+          if (g && g.intersectsCoordinate && g.intersectsCoordinate(cands[c])) {
+            var v = feats[fi].get(campo);
+            if (v !== null && v !== undefined && VALORES_INVALIDOS.indexOf(String(v).trim()) < 0) return String(v).trim();
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  async function montarImagem(pontos, modoUsado) {
+    var rot = map.getView().getRotation() || 0;          // a imagem sai com a mesma orientação do mapa na tela
+    var cos = Math.cos(rot), sin = Math.sin(rot);
+    var P = pontos.map(mundo20);
+    var area = modoUsado === 'area' && pontos.length >= 3;
+
+    // caixa que envolve a medição (no plano já girado), com margem
+    var minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+    P.forEach(function (p) {
+      var qx = p[0] * cos - p[1] * sin, qy = p[0] * sin + p[1] * cos;
+      if (qx < minx) minx = qx;
+      if (qx > maxx) maxx = qx;
+      if (qy < miny) miny = qy;
+      if (qy > maxy) maxy = qy;
+    });
+    var w = maxx - minx, h = maxy - miny;
+    var pad = Math.max(0.18 * Math.max(w, h), 90);
+    var w2 = w + 2 * pad, h2 = h + 2 * pad;
+    if (h2 > w2) w2 = h2;                                // no mínimo quadrada
+    if (h2 < 0.55 * w2) h2 = 0.55 * w2;                  // e não muito achatada
+    var qcx = (minx + maxx) / 2, qcy = (miny + maxy) / 2;
+    var Cx = qcx * cos + qcy * sin, Cy = -qcx * sin + qcy * cos;   // centro da imagem no mundo (zoom 20)
+
+    var W = 1080, S = W / w2, Hm = Math.round(h2 * S), F = Math.round(W * 0.19);
+    var k = W / 900;
+    var canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = Hm + F;
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#d9d9d9';
+    ctx.fillRect(0, 0, W, Hm);
+
+    // tiles que cobrem a imagem (mesmo girada)
+    var zt = Math.max(8, Math.min(20, Math.ceil(20 + Math.log(S) / Math.LN2 - 0.05)));
+    var cantos = [[0, 0], [W, 0], [0, Hm], [W, Hm]].map(function (c) {
+      var dx = c[0] - W / 2, dy = c[1] - Hm / 2;
+      return [Cx + (dx * cos + dy * sin) / S, Cy + (-dx * sin + dy * cos) / S];
+    });
+    var bx0 = Math.min.apply(null, cantos.map(function (c) { return c[0]; })), bx1 = Math.max.apply(null, cantos.map(function (c) { return c[0]; }));
+    var by0 = Math.min.apply(null, cantos.map(function (c) { return c[1]; })), by1 = Math.max.apply(null, cantos.map(function (c) { return c[1]; }));
+
+    var rosaP = carregarImg(window.ROSA_SVG_URL, false);
+    var camadas = await Promise.all(fontesDeImagem().map(function (f) { return prepararFonte(f, zt, bx0, bx1, by0, by1); }));
+    var rosa = await rosaP;
+
+    // desenha os tiles em coordenadas relativas ao centro (evita perder precisão com números enormes)
+    var usados = [];
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, W, Hm); ctx.clip();
+    ctx.setTransform(S * cos, S * sin, -S * sin, S * cos, W / 2, Hm / 2);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    camadas.forEach(function (cam) {
+      var ov = 0.75 / S, algum = false;
+      cam.tiles.forEach(function (t) {
+        if (!t.im) return;
+        algum = true;
+        ctx.drawImage(t.im, t.x * cam.T - Cx, t.y * cam.T - Cy, cam.T + ov, cam.T + ov);
+      });
+      if (algum) usados.push(cam.f.nome);
+    });
+    ctx.restore();
+
+    // medição por cima (no plano da imagem, sempre com texto em pé)
+    function toImg(p) {
+      var dx = p[0] - Cx, dy = p[1] - Cy;
+      return [W / 2 + S * (dx * cos - dy * sin), Hm / 2 + S * (dx * sin + dy * cos)];
+    }
+    var Q = P.map(toImg);
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    function trilha() {
+      ctx.beginPath();
+      Q.forEach(function (q, i) { if (i) ctx.lineTo(q[0], q[1]); else ctx.moveTo(q[0], q[1]); });
+      if (area) ctx.closePath();
+    }
+    if (Q.length >= 2) {
+      trilha(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 8 * k; ctx.stroke();
+      trilha();
+      if (area) { ctx.fillStyle = 'rgba(233,30,99,0.18)'; ctx.fill(); }
+      ctx.strokeStyle = COR; ctx.lineWidth = 4 * k; ctx.stroke();
+    }
+    Q.forEach(function (q) {
+      ctx.beginPath(); ctx.arc(q[0], q[1], 7 * k, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff'; ctx.fill();
+      ctx.lineWidth = 4 * k; ctx.strokeStyle = COR; ctx.stroke();
+    });
+
+    // medida de cada lado
+    var fsL = Math.round(W * 0.026);
+    ctx.font = 'bold ' + fsL + 'px Arial, Helvetica, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    var nSeg = area ? Q.length : Q.length - 1;
+    var cx0 = 0, cy0 = 0;
+    Q.forEach(function (q) { cx0 += q[0] / Q.length; cy0 += q[1] / Q.length; });
+    for (var i = 0; i < nSeg; i++) {
+      var a = Q[i], b = Q[(i + 1) % Q.length];
+      if (Math.sqrt(Math.pow(b[0] - a[0], 2) + Math.pow(b[1] - a[1], 2)) < fsL * 3.5) continue;   // lado curto: sem espaço
+      var mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, tx = mx, ty = my - fsL;
+      if (area) {                                       // texto para fora da figura
+        var vx = mx - cx0, vy = my - cy0, vl = Math.sqrt(vx * vx + vy * vy) || 1;
+        tx = mx + vx / vl * fsL * 0.95; ty = my + vy / vl * fsL * 0.95;
+      }
+      var txt = fmtDist(distancia(pontos[i], pontos[(i + 1) % pontos.length]));
+      ctx.lineWidth = 6 * k; ctx.strokeStyle = '#ffffff'; ctx.strokeText(txt, tx, ty);
+      ctx.fillStyle = '#000000'; ctx.fillText(txt, tx, ty);
+    }
+
+    // rosa dos ventos no canto, girada como o mapa
+    if (rosa) {
+      var D = Math.round(W * 0.15), rx = W - D / 2 - 22 * k, ry = D / 2 + 22 * k;
+      ctx.save();
+      ctx.beginPath(); ctx.arc(rx, ry, D / 2, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.88)'; ctx.fill();
+      ctx.lineWidth = 2 * k; ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.stroke();
+      ctx.translate(rx, ry); ctx.rotate(rot);
+      ctx.drawImage(rosa, -D / 2, -D / 2, D, D);
+      ctx.restore();
+    }
+
+    // créditos das imagens de fundo
+    if (usados.length) {
+      var cred = 'Imagens: ' + usados.join(' + ');
+      var fsC = Math.round(W * 0.016);
+      ctx.font = fsC + 'px Arial, Helvetica, sans-serif';
+      ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
+      var cw = ctx.measureText(cred).width;
+      ctx.fillStyle = 'rgba(255,255,255,0.75)';
+      ctx.fillRect(W - cw - 18, Hm - fsC - 14, cw + 18, fsC + 14);
+      ctx.fillStyle = '#333333';
+      ctx.fillText(cred, W - 9, Hm - 8);
+    }
+
+    // faixa com os resultados
+    var l1, l2;
+    if (area) {
+      var per = 0;
+      for (var j = 0; j < pontos.length; j++) per += distancia(pontos[j], pontos[(j + 1) % pontos.length]);
+      l1 = 'Área: ' + fmtArea(areaEsferica(pontos));
+      l2 = 'Perímetro: ' + fmtDist(per) + ' · ' + pontos.length + ' pontos';
+    } else {
+      var tot = 0;
+      for (var j2 = 0; j2 < pontos.length - 1; j2++) tot += distancia(pontos[j2], pontos[j2 + 1]);
+      l1 = 'Distância: ' + fmtDist(tot);
+      l2 = pontos.length + ' pontos';
+    }
+    var q = quadraDaMedicao(pontos);
+    var data = new Date().toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    var l3 = (q ? 'Quadra ' + q + '  ·  ' : '') + data;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, Hm, W, F);
+    ctx.fillStyle = COR;
+    ctx.fillRect(0, Hm, W, 5 * k);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    var pl = Math.round(W * 0.035);
+    ctx.fillStyle = '#111111';
+    ctx.font = 'bold ' + Math.round(W * 0.04) + 'px Arial, Helvetica, sans-serif';
+    ctx.fillText(l1, pl, Hm + F * 0.36);
+    ctx.fillStyle = '#222222';
+    ctx.font = Math.round(W * 0.028) + 'px Arial, Helvetica, sans-serif';
+    ctx.fillText(l2, pl, Hm + F * 0.62);
+    ctx.fillStyle = '#666666';
+    ctx.font = Math.round(W * 0.023) + 'px Arial, Helvetica, sans-serif';
+    ctx.fillText(l3, pl, Hm + F * 0.86);
+
+    return await new Promise(function (resolve, reject) {
+      try {
+        canvas.toBlob(function (b) { if (b) resolve(b); else reject(new Error('imagem vazia')); }, 'image/png');
+      } catch (e) { reject(e); }
+    });
+  }
+
+  function chaveAtual() {
+    return modo + '|' + (map.getView().getRotation() || 0).toFixed(4) + '|' +
+      pts.map(function (p) { return p[0].toFixed(2) + ',' + p[1].toFixed(2); }).join(';');
+  }
+
+  function baixar(blob) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'medicao-quadra.png';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
+  }
+
+  async function enviar(blob, texto) {
+    var arquivo = new File([blob], 'medicao-quadra.png', { type: 'image/png' });
+    // celular: abre a janela de compartilhar do aparelho (WhatsApp, e-mail...) já com a imagem anexada
+    if (navigator.canShare && navigator.canShare({ files: [arquivo] })) {
+      try {
+        await navigator.share({ files: [arquivo], title: 'Medição', text: texto });
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;       // a pessoa fechou a janela
+        if (e && e.name === 'NotAllowedError') {         // o navegador quer um toque novo; a imagem já está pronta
+          rotuloBtn('📤 Toque para enviar');
+          aviso('Imagem pronta. Toque no botão mais uma vez para enviar.');
+          return;
+        }
+      }
+    }
+    // computador: faz as duas coisas — copia a imagem (Ctrl+V no WhatsApp Web ou no e-mail) e abre "Salvar como"
+    var copiou = false, salvou = false, cancelou = false;
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      copiou = true;
+    } catch (e) { console.warn('Copiar imagem:', e); }
+    if (window.showSaveFilePicker) {                      // Chrome e Edge: janela para escolher a pasta
+      try {
+        var alvo = await window.showSaveFilePicker({
+          suggestedName: 'medicao-quadra.png',
+          types: [{ description: 'Imagem PNG', accept: { 'image/png': ['.png'] } }]
+        });
+        var gravador = await alvo.createWritable();
+        await gravador.write(blob);
+        await gravador.close();
+        salvou = true;
+      } catch (e) {
+        if (e && e.name === 'AbortError') cancelou = true;   // fechou a janela de salvar: a cópia continua valendo
+        else { baixar(blob); salvou = true; }
+      }
+    } else {                                              // outros navegadores: baixa direto para a pasta Downloads
+      baixar(blob);
+      salvou = true;
+    }
+    if (copiou && salvou) aviso('Imagem salva e copiada. Cole com Ctrl+V no WhatsApp ou no e-mail.');
+    else if (copiou) aviso(cancelou ? 'Imagem copiada (não foi salva). Cole com Ctrl+V.' : 'Imagem copiada. Cole com Ctrl+V.');
+    else if (salvou) aviso('Imagem salva. Anexe no WhatsApp ou no e-mail.');
+    else aviso('Não foi possível copiar nem salvar a imagem.');
+  }
+
+  async function compartilhar() {
+    if (gerando) return;
+    if (!textoCopia) {
+      aviso(modo === 'dist' ? 'Marque ao menos 2 pontos para compartilhar.' : 'Marque ao menos 3 pontos para compartilhar.');
+      return;
+    }
+    if (location.protocol === 'file:') {
+      aviso('Para gerar a imagem, abra o mapa por um servidor (http://localhost:8000) ou pelo site publicado, não direto pelo arquivo.');
+      return;
+    }
+    var chave = chaveAtual(), texto = textoCopia;
+    var blob = (imgCache && imgCache.chave === chave) ? imgCache.blob : null;
+    if (!blob) {
+      gerando = true;
+      rotuloBtn('Gerando imagem…');
+      try {
+        blob = await montarImagem(pts.slice(), modo);
+        imgCache = { chave: chave, blob: blob };
+      } catch (e) {
+        console.error('Imagem da medição:', e);
+        aviso('Não foi possível gerar a imagem.');
+        return;
+      } finally {
+        gerando = false;
+        rotuloBtn();
+      }
+    }
+    await enviar(blob, texto);
+  }
+  btnShare.onclick = compartilhar;
+
   // cada toque (sem arrasto) acrescenta um ponto
   map.on('singleclick', function (e) {
     if (!ativo) return;
+    if (apagando) {                                   // apaga o ponto mais próximo do toque (até ~22 px)
+      var melhor = -1, dmin = 22 * 22;
+      for (var j = 0; j < pts.length; j++) {
+        var pj = map.getPixelFromCoordinate(pts[j]);
+        if (!pj) continue;
+        var d2 = Math.pow(pj[0] - e.pixel[0], 2) + Math.pow(pj[1] - e.pixel[1], 2);
+        if (d2 <= dmin) { dmin = d2; melhor = j; }
+      }
+      if (melhor >= 0) { pts.splice(melhor, 1); modoApagar(false); desenhar(); }
+      else aviso('Toque bem em cima do ponto que quer apagar.');
+      return;
+    }
     for (var i = 0; i < pts.length; i++) {            // toque sobre um ponto existente = arrastar, não criar outro
       var px = map.getPixelFromCoordinate(pts[i]);
       if (px && Math.pow(px[0] - e.pixel[0], 2) + Math.pow(px[1] - e.pixel[1], 2) < 144) return;
@@ -1114,6 +1500,68 @@ document.addEventListener('click', function (e) {
     atual = achou;
     if (achou) fonteHover.addFeature(new ol.Feature(achou.getGeometry().clone()));
   });
+})();
+</script>
+<script>
+// ================= ROSA DOS VENTOS: gira junto com o mapa; um toque volta para o norte =================
+(function () {
+  var ROSA_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="-6868.7 -7144.3 5513.3 5513.3" width="200" height="200"><path fill="#263238" d="m-4122.5-6166.1-272.97 1313.9-492.72-323.25-10.375 10.344 322.69 491.94-1311.3 272.34v23.5l1310.8 272.34-324.78 495.09 10.344 10.344 493.03-323.38 272.88 1313.8h23.5l273.03-1314.1 492.75 323.22 10.344-10.344-322.81-492.12 1311.2-272.38v-23.5l-1310.5-272.28 324.53-494.69-10.375-10.344-492.91 323.31-272.88-1313.7h-23.5zm-0.2188 119.03v1373.8 254.84l-280.16-280.25 28.969-139.38 251.19-1209zm736.97 923.69-411.25 411.25-25.875-124.53 437.12-286.72zm-1460.5 10.781 410.31 410.31-124.25 25.812-286.06-436.12zm1042 433.81 142.66 29.656 1205.7 250.5h-1370-258.53l280.22-280.16zm-1963.9 301.66h1370.3 258.5l-280.22 280.22-142.69-29.656-1205.9-250.56zm1666.9 20.094 280.22 280.22-28.969 139.38-251.25 1209.2v-1374.1-254.75zm437.38 257.75 286.19 436.34-410.53-410.53 124.34-25.812zm-763.09 36.062 25.844 124.56-437.19 286.78 411.34-411.34z"/><text x="-4112.0" y="-6521.8" dy="0.35em" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="711.4" fill="#d32f2f">N</text><text x="-1977.9" y="-4387.6" dy="0.35em" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="711.4" fill="#263238">L</text><text x="-4112.0" y="-2253.4" dy="0.35em" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="711.4" fill="#263238">S</text><text x="-6246.2" y="-4387.6" dy="0.35em" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="711.4" fill="#263238">O</text></svg>';
+  // a medição usa o mesmo desenho ao gerar a imagem para compartilhar
+  window.ROSA_SVG_URL = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(ROSA_SVG);
+
+  var view = map.getView();
+
+  // garante os gestos de girar o mapa: dois dedos no celular; Shift+Alt+arrastar no computador
+  try {
+    var tem = function (Classe) {
+      return map.getInteractions().getArray().some(function (i) { return i instanceof Classe; });
+    };
+    if (!tem(ol.interaction.PinchRotate)) map.addInteraction(new ol.interaction.PinchRotate());
+    if (!tem(ol.interaction.DragRotate)) map.addInteraction(new ol.interaction.DragRotate());
+  } catch (e) { console.warn('Rotação do mapa:', e); }
+
+  var el = document.createElement('div');
+  el.id = 'rosaVentos';
+  el.title = 'Rosa dos ventos: toque para voltar ao norte';
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', 'Voltar o mapa para o norte');
+  el.style.cssText = 'position:fixed;left:8px;top:90px;z-index:10000;width:52px;height:52px;border-radius:50%;' +
+    'background:rgba(255,255,255,.92);box-shadow:0 1px 5px rgba(0,0,0,.4);cursor:pointer;' +
+    'touch-action:manipulation;-webkit-tap-highlight-color:transparent;user-select:none';
+  var img = new Image();
+  img.src = window.ROSA_SVG_URL;
+  img.alt = '';
+  img.draggable = false;
+  img.style.cssText = 'width:100%;height:100%;display:block;pointer-events:none';
+  el.appendChild(img);
+  document.body.appendChild(el);
+
+  function atualizar() {
+    img.style.transform = 'rotate(' + (view.getRotation() || 0) + 'rad)';
+  }
+  view.on('change:rotation', atualizar);
+  atualizar();
+
+  el.addEventListener('click', function () {
+    var r = view.getRotation() || 0;
+    var volta = 2 * Math.PI;
+    r = r - volta * Math.round(r / volta);   // escolhe o caminho mais curto até o norte
+    view.setRotation(r);
+    view.animate({ rotation: 0, duration: 300 });
+  });
+
+  // fica logo abaixo dos botões de zoom, onde quer que eles estejam
+  function posicionar() {
+    var z = document.querySelector('.ol-zoom');
+    if (!z) return;
+    var r = z.getBoundingClientRect();
+    if (!r.height) return;
+    el.style.left = Math.max(8, Math.round(r.left)) + 'px';
+    el.style.top = Math.round(r.bottom + 10) + 'px';
+  }
+  setTimeout(posicionar, 300);
+  setTimeout(posicionar, 1500);
+  window.addEventListener('resize', posicionar);
 })();
 </script>
     </body>

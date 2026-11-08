@@ -1099,18 +1099,29 @@ document.addEventListener('click', function (e) {
     return [(c[0] + HALF_MERC) * k, (HALF_MERC - c[1]) * k];
   }
 
+  // Se os tiles do Google forem bloqueados pelo navegador (CORS), publique o proxy do README e cole a URL aqui.
+  // Ex.: 'https://meu-proxy.workers.dev'  (o proxy recebe ?z=..&x=..&y=.. e devolve o tile com CORS liberado)
+  var PROXY_TILES_GOOGLE = '';
+
   function fontesDeImagem() {
-    var lista = [{
+    var bases = [{
+      nome: 'Google Satélite', min: 0, max: 20, cors: true,
+      url: function (z, x, y) {
+        if (PROXY_TILES_GOOGLE) return PROXY_TILES_GOOGLE + '?z=' + z + '&x=' + x + '&y=' + y;
+        return 'https://mt' + ((x + y) % 4) + '.google.com/vt/lyrs=s&hl=pt-BR&x=' + x + '&y=' + y + '&z=' + z;
+      }
+    }, {
       nome: 'Esri World Imagery', min: 0, max: 18, cors: true,
       url: function (z, x, y) { return 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/' + z + '/' + y + '/' + x; }
     }];
+    var drone = [];
     (typeof mosaicos !== 'undefined' ? mosaicos : []).forEach(function (m) {
-      lista.push({
+      drone.push({
         nome: m.nome, min: m.minZoom, max: m.maxZoom, cors: false,
         url: function (z, x, y) { return m.pasta + '/' + z + '/' + x + '/' + (((1 << z) - 1) - y) + '.png'; }
       });
     });
-    return lista;
+    return { bases: bases, drone: drone };
   }
 
   function prepararFonte(f, zt, bx0, bx1, by0, by1) {
@@ -1196,7 +1207,14 @@ document.addEventListener('click', function (e) {
     var by0 = Math.min.apply(null, cantos.map(function (c) { return c[1]; })), by1 = Math.max.apply(null, cantos.map(function (c) { return c[1]; }));
 
     var rosaP = carregarImg(window.ROSA_SVG_URL, false);
-    var camadas = await Promise.all(fontesDeImagem().map(function (f) { return prepararFonte(f, zt, bx0, bx1, by0, by1); }));
+    var fontes = fontesDeImagem();
+    var camadas = [];
+    for (var bi = 0; bi < fontes.bases.length; bi++) {          // Google primeiro; se não carregar nada, cai para a Esri
+      var cb = await prepararFonte(fontes.bases[bi], zt, bx0, bx1, by0, by1);
+      if (cb.tiles.some(function (t) { return t.im; })) { camadas.push(cb); break; }
+      console.warn('Sem imagens de', fontes.bases[bi].nome, '- tentando a próxima fonte.');
+    }
+    camadas = camadas.concat(await Promise.all(fontes.drone.map(function (f) { return prepararFonte(f, zt, bx0, bx1, by0, by1); })));
     var rosa = await rosaP;
 
     // desenha os tiles em coordenadas relativas ao centro (evita perder precisão com números enormes)
@@ -1339,50 +1357,83 @@ document.addEventListener('click', function (e) {
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
   }
 
+  // painel de pré-visualização: cada botão é um clique novo, então o navegador sempre permite copiar/salvar
+  function mostrarPrevia(blob, texto) {
+    var url = URL.createObjectURL(blob);
+    var arquivo = new File([blob], 'medicao-quadra.png', { type: 'image/png' });
+    var fundo = document.createElement('div');
+    fundo.style.cssText = 'position:fixed;inset:0;z-index:10010;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:12px';
+    var cx = document.createElement('div');
+    cx.style.cssText = 'background:#fff;border-radius:10px;padding:12px;max-width:min(560px,100%);max-height:100%;overflow:auto;font:14px sans-serif;box-shadow:0 4px 20px rgba(0,0,0,.5)';
+    var img = document.createElement('img');
+    img.src = url;
+    img.style.cssText = 'display:block;max-width:100%;max-height:60vh;margin:0 auto 10px;border-radius:6px';
+    var msg = document.createElement('div');
+    msg.style.cssText = 'min-height:18px;color:#555;font-size:13px;margin-bottom:8px;text-align:center';
+    var linha = document.createElement('div');
+    linha.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+    function fechar() { URL.revokeObjectURL(url); document.body.removeChild(fundo); }
+    function botao(rotulo, cor, fn) {
+      var bt = document.createElement('button');
+      bt.textContent = rotulo;
+      bt.style.cssText = 'flex:1;min-width:110px;padding:10px 8px;border:0;border-radius:6px;font-size:14px;cursor:pointer;background:' + cor + ';color:' + (cor === '#eee' ? '#222' : '#fff');
+      bt.onclick = fn;
+      linha.appendChild(bt);
+      return bt;
+    }
+    if (navigator.canShare && navigator.canShare({ files: [arquivo] })) {
+      botao('📤 Compartilhar', '#25d366', async function () {
+        try { await navigator.share({ files: [arquivo], title: 'Medição', text: texto }); }
+        catch (e) { if (!e || e.name !== 'AbortError') msg.textContent = 'Não foi possível abrir o compartilhamento.'; }
+      });
+    }
+    if (navigator.clipboard && window.ClipboardItem) {
+      botao('📋 Copiar imagem', '#1e88e5', async function () {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+          msg.textContent = 'Imagem copiada. Cole com Ctrl+V no WhatsApp Web ou no e-mail.';
+        } catch (e) { console.warn(e); msg.textContent = 'Não foi possível copiar. Use "Salvar no computador".'; }
+      });
+    }
+    botao('💾 Salvar no computador', '#e91e63', async function () {
+      if (window.showSaveFilePicker) {
+        try {
+          var alvo = await window.showSaveFilePicker({
+            suggestedName: 'medicao-quadra.png',
+            types: [{ description: 'Imagem PNG', accept: { 'image/png': ['.png'] } }]
+          });
+          var g = await alvo.createWritable(); await g.write(blob); await g.close();
+          msg.textContent = 'Imagem salva.';
+          return;
+        } catch (e) {
+          if (e && e.name === 'AbortError') return;
+        }
+      }
+      baixar(blob);
+      msg.textContent = 'Imagem baixada na pasta Downloads.';
+    });
+    botao('Fechar', '#eee', fechar);
+    cx.appendChild(img); cx.appendChild(msg); cx.appendChild(linha);
+    fundo.appendChild(cx);
+    fundo.addEventListener('click', function (e) { if (e.target === fundo) fechar(); });
+    document.body.appendChild(fundo);
+  }
+
   async function enviar(blob, texto) {
     var arquivo = new File([blob], 'medicao-quadra.png', { type: 'image/png' });
+    var celular = !!(window.matchMedia && matchMedia('(pointer:coarse)').matches);
     // celular: abre a janela de compartilhar do aparelho (WhatsApp, e-mail...) já com a imagem anexada
-    if (navigator.canShare && navigator.canShare({ files: [arquivo] })) {
+    // computador: a janela de compartilhar do Windows não tem "salvar" nem "copiar", então mostra o painel próprio
+    if (celular && navigator.canShare && navigator.canShare({ files: [arquivo] })) {
       try {
         await navigator.share({ files: [arquivo], title: 'Medição', text: texto });
         return;
       } catch (e) {
         if (e && e.name === 'AbortError') return;       // a pessoa fechou a janela
-        if (e && e.name === 'NotAllowedError') {         // o navegador quer um toque novo; a imagem já está pronta
-          rotuloBtn('📤 Toque para enviar');
-          aviso('Imagem pronta. Toque no botão mais uma vez para enviar.');
-          return;
-        }
+        // o navegador quis um toque novo (ou falhou): mostra o painel, que sempre funciona
       }
     }
-    // computador: faz as duas coisas — copia a imagem (Ctrl+V no WhatsApp Web ou no e-mail) e abre "Salvar como"
-    var copiou = false, salvou = false, cancelou = false;
-    try {
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-      copiou = true;
-    } catch (e) { console.warn('Copiar imagem:', e); }
-    if (window.showSaveFilePicker) {                      // Chrome e Edge: janela para escolher a pasta
-      try {
-        var alvo = await window.showSaveFilePicker({
-          suggestedName: 'medicao-quadra.png',
-          types: [{ description: 'Imagem PNG', accept: { 'image/png': ['.png'] } }]
-        });
-        var gravador = await alvo.createWritable();
-        await gravador.write(blob);
-        await gravador.close();
-        salvou = true;
-      } catch (e) {
-        if (e && e.name === 'AbortError') cancelou = true;   // fechou a janela de salvar: a cópia continua valendo
-        else { baixar(blob); salvou = true; }
-      }
-    } else {                                              // outros navegadores: baixa direto para a pasta Downloads
-      baixar(blob);
-      salvou = true;
-    }
-    if (copiou && salvou) aviso('Imagem salva e copiada. Cole com Ctrl+V no WhatsApp ou no e-mail.');
-    else if (copiou) aviso(cancelou ? 'Imagem copiada (não foi salva). Cole com Ctrl+V.' : 'Imagem copiada. Cole com Ctrl+V.');
-    else if (salvou) aviso('Imagem salva. Anexe no WhatsApp ou no e-mail.');
-    else aviso('Não foi possível copiar nem salvar a imagem.');
+    mostrarPrevia(blob, texto);
   }
 
   async function compartilhar() {

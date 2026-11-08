@@ -1291,35 +1291,49 @@ document.addEventListener('click', function (e) {
       ctx.lineWidth = 4 * k; ctx.strokeStyle = COR; ctx.stroke();
     });
 
-    // medida de cada lado
+    // medida de cada lado: o texto acompanha a direção da linha (sempre de pé, nunca de cabeça para baixo)
     var fsL = Math.round(W * 0.026);
     ctx.font = 'bold ' + fsL + 'px Arial, Helvetica, sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     var nSeg = area ? Q.length : Q.length - 1;
-    var cx0 = 0, cy0 = 0;
-    Q.forEach(function (q) { cx0 += q[0] / Q.length; cy0 += q[1] / Q.length; });
+    function dentroDaFigura(x, y) {                       // ponto dentro do polígono? (para colocar o texto do lado de fora)
+      var dentro = false;
+      for (var m = 0, n = Q.length, j = n - 1; m < n; j = m++) {
+        if ((Q[m][1] > y) !== (Q[j][1] > y) &&
+            x < (Q[j][0] - Q[m][0]) * (y - Q[m][1]) / (Q[j][1] - Q[m][1]) + Q[m][0]) dentro = !dentro;
+      }
+      return dentro;
+    }
     for (var i = 0; i < nSeg; i++) {
       var a = Q[i], b = Q[(i + 1) % Q.length];
-      if (Math.sqrt(Math.pow(b[0] - a[0], 2) + Math.pow(b[1] - a[1], 2)) < fsL * 3.5) continue;   // lado curto: sem espaço
-      var mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, tx = mx, ty = my - fsL;
-      if (area) {                                       // texto para fora da figura
-        var vx = mx - cx0, vy = my - cy0, vl = Math.sqrt(vx * vx + vy * vy) || 1;
-        tx = mx + vx / vl * fsL * 0.95; ty = my + vy / vl * fsL * 0.95;
-      }
+      var ddx = b[0] - a[0], ddy = b[1] - a[1], comp = Math.sqrt(ddx * ddx + ddy * ddy);
+      if (comp < fsL * 3.5) continue;                     // lado curto: sem espaço
+      var mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+      var nx = -ddy / comp, ny = ddx / comp;              // perpendicular à linha
+      if (area) {
+        if (dentroDaFigura(mx + nx * 4 * k, my + ny * 4 * k)) { nx = -nx; ny = -ny; }   // aponta para fora
+      } else if (ny > 0) { nx = -nx; ny = -ny; }          // medida de distância: texto acima da linha
+      var desloc = fsL * 0.85;
+      var tx = mx + nx * desloc, ty = my + ny * desloc;
+      var ang = Math.atan2(ddy, ddx);
+      if (ang > Math.PI / 2) ang -= Math.PI; else if (ang < -Math.PI / 2) ang += Math.PI;   // texto sempre legível
       var txt = fmtDist(distancia(pontos[i], pontos[(i + 1) % pontos.length]));
-      ctx.lineWidth = 6 * k; ctx.strokeStyle = '#ffffff'; ctx.strokeText(txt, tx, ty);
-      ctx.fillStyle = '#000000'; ctx.fillText(txt, tx, ty);
+      ctx.save();
+      ctx.translate(tx, ty); ctx.rotate(ang);
+      ctx.lineWidth = 6 * k; ctx.strokeStyle = '#ffffff'; ctx.strokeText(txt, 0, 0);
+      ctx.fillStyle = '#000000'; ctx.fillText(txt, 0, 0);
+      ctx.restore();
     }
 
-    // rosa dos ventos no canto, girada como o mapa
+    // rosa dos ventos no canto superior direito, sem fundo; um brilho branco suave destaca as letras sobre a foto
     if (rosa) {
-      var D = Math.round(W * 0.15), rx = W - D / 2 - 22 * k, ry = D / 2 + 22 * k;
+      var D = Math.round(W * 0.17), rx = W - D / 2 - 12 * k, ry = D / 2 + 12 * k;
       ctx.save();
-      ctx.beginPath(); ctx.arc(rx, ry, D / 2, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.88)'; ctx.fill();
-      ctx.lineWidth = 2 * k; ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.stroke();
       ctx.translate(rx, ry); ctx.rotate(rot);
+      ctx.shadowColor = 'rgba(255,255,255,0.95)';
+      ctx.shadowBlur = 9 * k;
       ctx.drawImage(rosa, -D / 2, -D / 2, D, D);
+      ctx.drawImage(rosa, -D / 2, -D / 2, D, D);        // segunda passada reforça o brilho
       ctx.restore();
     }
 

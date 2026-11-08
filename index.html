@@ -1698,7 +1698,22 @@ document.addEventListener('click', function (e) {
   img.alt = '';
   img.draggable = false;
   img.style.cssText = 'width:100%;height:100%;display:block;pointer-events:none;' +
-    'filter:drop-shadow(0 0 2px #fff) drop-shadow(0 0 3px #fff) drop-shadow(0 0 4px rgba(255,255,255,.9))';   // brilho branco no lugar do fundo
+    'will-change:transform';
+  // brilho branco no lugar do fundo: desenhado UMA vez num canvas (um filtro CSS refeito a cada quadro do giro trava o celular)
+  (function () {
+    var base = new Image();
+    base.onload = function () {
+      try {
+        var M = 24, T = 200, c = document.createElement('canvas');
+        c.width = c.height = T + 2 * M;
+        var g = c.getContext('2d');
+        g.shadowColor = 'rgba(255,255,255,1)'; g.shadowBlur = 7;
+        g.drawImage(base, M, M, T, T); g.drawImage(base, M, M, T, T);
+        img.src = c.toDataURL('image/png');
+      } catch (e) { /* mantém a rosa sem brilho */ }
+    };
+    base.src = window.ROSA_SVG_URL;
+  })();
   el.appendChild(img);
   document.body.appendChild(el);
   // celular (tela estreita): a barra de busca (com 📍 e 📏) ocupa o topo até a borda direita,
@@ -2206,6 +2221,20 @@ document.addEventListener('click', function (e) {
 (function () {
   var view = map.getView();
   var ROSA = window.ROSA_SVG_URL;
+
+  // 1) o OpenLayers "gruda" no norte quando a rotação chega perto de 0 (a sensação de snap): desliga essa restrição
+  try {
+    if (view.constraints_ && typeof view.constraints_.rotation === 'function') {
+      view.constraints_.rotation = function (r) { return r; };
+    }
+  } catch (e) { console.warn('Rotação livre:', e); }
+  // 2) no celular, o giro com dois dedos só começava depois de ~17° de torção e então "pulava": começa quase de imediato
+  try {
+    map.getInteractions().getArray().slice().forEach(function (i) {
+      if (i instanceof ol.interaction.PinchRotate) map.removeInteraction(i);
+    });
+    map.addInteraction(new ol.interaction.PinchRotate({ threshold: 0.04 }));
+  } catch (e) { console.warn('Giro com dois dedos:', e); }
 
   var st = document.createElement('style');
   st.textContent =

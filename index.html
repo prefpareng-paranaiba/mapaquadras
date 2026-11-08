@@ -61,6 +61,7 @@
         <script src="./layers/layers.js" type="text/javascript"></script> 
         <script src="./resources/Autolinker.min.js"></script>
         <script src="./resources/qgis2web.js"></script>
+        <script src="./ruas.js"></script>
 		<script>
 var mosaicos = [
   { nome: 'Santa Mônica (drone)', pasta: 'santa_monica', minZoom: 13, maxZoom: 20 }
@@ -146,6 +147,7 @@ setTimeout(function () {
 
   // pino: ponto vermelho com borda branca
   var marcador = new ol.layer.Vector({
+    interactive: false,
     source: new ol.source.Vector({
       features: [new ol.Feature(new ol.geom.Point(coord))]
     }),
@@ -223,19 +225,24 @@ boxBusca.innerHTML =
   '<div style="background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.4);display:flex">' +
   '<input id="inputBusca" type="text" autocomplete="off" placeholder="Rua, nº da quadra ou coordenada" ' +
   'style="border:0;padding:8px;flex:1;font-size:14px;outline:none;border-radius:4px;min-width:0">' +
-  '<button id="btnBusca" style="border:0;background:none;padding:0 10px;cursor:pointer">🔍</button></div>' +
+  '<button id="btnLimpar" title="Limpar busca" aria-label="Limpar busca" style="display:none;border:0;background:none;padding:0 6px;cursor:pointer;font-size:20px;line-height:1;color:#777">×</button>' +
+  '<button id="btnBusca" style="border:0;background:none;padding:0 10px;cursor:pointer">🔍</button>' +
+  '<button id="btnMedir" title="Medir distância e área" style="border:0;border-left:1px solid #ddd;background:none;padding:0 10px;cursor:pointer;font-size:16px;border-radius:0 4px 4px 0">📏</button></div>' +
   '<div id="listaBusca" style="background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.4);' +
   'margin-top:2px;display:none;max-height:260px;overflow-y:auto"></div>';
 document.body.appendChild(boxBusca);
 
 var inputBusca = document.getElementById('inputBusca');
 var listaBusca = document.getElementById('listaBusca');
+var btnLimpar = document.getElementById('btnLimpar');
+var coordDaBusca = false;   // o cartão de coordenada aberto veio desta busca?
 var sugestoes = [];
 
 // --- marcador azul da busca ---
 var fonteBusca = new ol.source.Vector();
 map.addLayer(new ol.layer.Vector({
   source: fonteBusca,
+  interactive: false,
   zIndex: 9998,
   style: new ol.style.Style({
     image: new ol.style.Circle({
@@ -250,6 +257,7 @@ map.addLayer(new ol.layer.Vector({
 var fonteDestaque = new ol.source.Vector();
 map.addLayer(new ol.layer.Vector({
   source: fonteDestaque,
+  interactive: false,
   zIndex: 9996,
   style: [
     new ol.style.Style({ stroke: new ol.style.Stroke({ color: '#ffffff', width: 8 }) }),
@@ -315,9 +323,10 @@ async function enderecos(q) {
   return d.features.map(function (f) {
     var p = f.properties;
     var linha1 = p.name || ((p.street || '') + (p.housenumber ? ', ' + p.housenumber : ''));
-    var linha2 = [p.street && p.name ? p.street : '', p.district, p.city].filter(Boolean).join(' - ');
+    var linha2 = [p.street && p.name ? p.street : '', p.district, p.city].filter(function (v, i, a) { return v && a.indexOf(v) === i; }).join(' - ');
     return { tipo: 'endereco', rotulo: linha1, detalhe: linha2,
-             lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] };
+             lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1],
+             rua: (p.osm_key === 'highway' || p.type === 'street') ? p.name : null };
   });
 }
 
@@ -352,7 +361,9 @@ function escolher(i) {
   fonteDestaque.clear();
   listaBusca.style.display = 'none';
   inputBusca.value = s.rotulo.replace(/^Quadra /, '');
+  atualizarX();
   if (s.tipo === 'coordenada') { irParaCoordenada(s.lat, s.lon); return; }
+  if (coordDaBusca && window.fecharCoordenada) { window.fecharCoordenada(); coordDaBusca = false; }
   if (s.tipo === 'quadra') {
     var ext = ol.extent.createEmpty();
     s.features.forEach(function (f) { ol.extent.extend(ext, f.getGeometry().getExtent()); });
@@ -360,9 +371,14 @@ function escolher(i) {
     map.getView().fit(ext, { padding: [80, 80, 80, 80], maxZoom: 19 });
   } else if (s.tipo === 'endereco') {
     var coord = ol.proj.fromLonLat([s.lon, s.lat]);
-    fonteBusca.addFeature(new ol.Feature(new ol.geom.Point(coord)));
     map.getView().setCenter(coord);
-    map.getView().setZoom(18);
+    if (s.rua) {
+      map.getView().setZoom(17);
+      destacarRua(s.rua, coord, ++contador);   // desenha a rua assim que o traçado chegar
+    } else {
+      fonteBusca.addFeature(new ol.Feature(new ol.geom.Point(coord)));
+      map.getView().setZoom(18);
+    }
   }
 }
 
@@ -403,10 +419,150 @@ function lerCoordenada(texto) {
   return { lat: lat, lon: lon };
 }
 
+// --- destaque de rua: traça todos os trechos de mesmo nome dentro da cidade (dados do OpenStreetMap) ---
+// 1º tenta o arquivo local "ruas.json" (instantâneo); se ele não existir, consulta o Overpass pela internet.
+var OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+var _ruasLocal = null, _cacheRuas = {};
+
+function semAcento(t) {
+  return String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+function carregarRuasLocal() {
+  if (!_ruasLocal) {
+    if (window.RUAS_OSM && window.RUAS_OSM.elements) {          // ruas.js (carregado por <script>, funciona em qualquer lugar)
+      console.info('[ruas.js] carregado:', window.RUAS_OSM.elements.length, 'trechos');
+      _ruasLocal = Promise.resolve(window.RUAS_OSM);
+    } else {                                                    // alternativa: ruas.json (exige servidor ou o site publicado)
+      _ruasLocal = fetch('ruas.json')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (d && d.elements) console.info('[ruas.json] carregado:', d.elements.length, 'trechos');
+          else console.warn('Sem ruas.js/ruas.json; usando consulta online');
+          return d;
+        })
+        .catch(function () { console.warn('Sem ruas.js/ruas.json; usando consulta online'); return null; });
+    }
+  }
+  return _ruasLocal;
+}
+setTimeout(carregarRuasLocal, 2500);        // pré-carrega depois que o mapa abriu
+
+// consulta os dois servidores ao mesmo tempo, com limite de 12 s; vale o primeiro que responder
+function buscarRuaOnline(consulta) {
+  return new Promise(function (resolve) {
+    var restantes = OVERPASS.length, ctrls = [];
+    function falha() { if (--restantes === 0) resolve(null); }
+    OVERPASS.forEach(function (url, i) {
+      var c = new AbortController();
+      ctrls.push(c);
+      var t = setTimeout(function () { c.abort(); }, 12000);
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'data=' + encodeURIComponent(consulta),
+        signal: c.signal
+      })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          clearTimeout(t);
+          if (d && d.elements) {
+            ctrls.forEach(function (x, j) { if (j !== i) x.abort(); });
+            resolve(d);
+          } else { falha(); }
+        })
+        .catch(function () { clearTimeout(t); falha(); });
+    });
+  });
+}
+
+// tipos de via que podem aparecer abreviados ou por extenso ("R." / "Rua", "Av." / "Avenida"...)
+var TIPOS_VIA = ['rua', 'r', 'avenida', 'av', 'travessa', 'tv', 'praca', 'pc', 'alameda', 'al',
+                 'estrada', 'est', 'rodovia', 'rod', 'beco', 'via'];
+function nucleoNome(t) {
+  var p = semAcento(t).replace(/[.,]/g, ' ').split(/\s+/).filter(Boolean);
+  if (p.length > 1 && TIPOS_VIA.indexOf(p[0]) >= 0) p.shift();
+  return p.join(' ');
+}
+function filtrarRuas(lista, nome) {
+  var alvo = semAcento(nome);
+  var exatos = lista.filter(function (el) { return el.tags && el.tags.name && semAcento(el.tags.name) === alvo; });
+  if (exatos.length) return exatos;
+  var nucleo = nucleoNome(nome);                       // mesma rua com o tipo escrito de outro jeito
+  return lista.filter(function (el) { return el.tags && el.tags.name && nucleoNome(el.tags.name) === nucleo; });
+}
+
+function avisarBusca(texto) {
+  var a = document.createElement('div');
+  a.textContent = texto;
+  a.style.cssText = 'position:fixed;top:56px;left:50px;z-index:10003;background:#323232;color:#fff;' +
+    'padding:8px 12px;border-radius:4px;font:13px sans-serif;max-width:calc(100vw - 70px);box-shadow:0 1px 5px rgba(0,0,0,.4)';
+  document.body.appendChild(a);
+  setTimeout(function () { if (a.parentNode) a.parentNode.removeChild(a); }, 4500);
+}
+
+async function destacarRua(nome, coordCentro, token) {
+  var elementos = [];
+  var local = await carregarRuasLocal();
+  var origem = 'arquivo local';
+  if (local && local.elements) elementos = filtrarRuas(local.elements, nome);
+
+  if (!elementos.length) {                              // sem arquivo local, ou rua ausente nele: consulta online
+    origem = 'consulta online';
+    if (_cacheRuas[nome]) {
+      elementos = _cacheRuas[nome];
+    } else {
+      var b = BBOX.split(',').map(Number);              // oeste, sul, leste, norte
+      var consulta = '[out:json][timeout:25];way["highway"]["name"="' +
+        nome.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"](' + b[1] + ',' + b[0] + ',' + b[3] + ',' + b[2] + ');out geom;';
+      var d = await buscarRuaOnline(consulta);
+      if (d && d.elements) { elementos = d.elements; _cacheRuas[nome] = elementos; }
+    }
+  }
+  if (token !== contador) return;                       // a pessoa já fez outra busca ou cancelou
+
+  var ext = ol.extent.createEmpty(), n = 0;
+  elementos.forEach(function (el) {
+    if (!el.geometry || el.geometry.length < 2) return;
+    var cs = el.geometry.map(function (g) { return ol.proj.fromLonLat([g.lon, g.lat]); });
+    var ft = new ol.Feature(new ol.geom.LineString(cs));
+    fonteDestaque.addFeature(ft);
+    ol.extent.extend(ext, ft.getGeometry().getExtent());
+    n++;
+  });
+  console.info('[rua]', nome, '→', n, 'trechos (' + origem + ')');
+  if (n) {
+    map.getView().fit(ext, { padding: [80, 80, 80, 80], maxZoom: 19 });
+  } else {
+    fonteBusca.addFeature(new ol.Feature(new ol.geom.Point(coordCentro)));
+    avisarBusca('Traçado da rua não encontrado no OpenStreetMap; mostrando só o ponto.');
+  }
+}
+
+function atualizarX() {
+  btnLimpar.style.display = inputBusca.value ? 'block' : 'none';
+}
+
+// cancela a pesquisa: apaga o texto, a lista, o destaque da quadra e o pino da busca
+function limparBusca() {
+  clearTimeout(timer);
+  contador++;                                  // descarta respostas que ainda estejam a caminho
+  inputBusca.value = '';
+  sugestoes = [];
+  listaBusca.style.display = 'none';
+  fonteBusca.clear();
+  fonteDestaque.clear();
+  if (coordDaBusca && window.fecharCoordenada) window.fecharCoordenada();
+  coordDaBusca = false;
+  atualizarX();
+  inputBusca.focus();
+}
+
 function irParaCoordenada(lat, lon) {
   fonteBusca.clear();
   fonteDestaque.clear();
   listaBusca.style.display = 'none';
+  coordDaBusca = true;
   var coord = ol.proj.fromLonLat([lon, lat]);
   map.getView().setCenter(coord);
   map.getView().setZoom(19);
@@ -453,6 +609,7 @@ async function atualizar() {
 
 inputBusca.addEventListener('input', function () {
   clearTimeout(timer);
+  atualizarX();
   if (!inputBusca.value.trim()) { fonteDestaque.clear(); fonteBusca.clear(); }
   timer = setTimeout(atualizar, 350);       // espera parar de digitar
 });
@@ -460,9 +617,12 @@ inputBusca.addEventListener('keydown', function (e) {
   if (e.key === 'Enter') {
     e.preventDefault();
     entrar();
+  } else if (e.key === 'Escape') {
+    limparBusca();
   }
 });
 document.getElementById('btnBusca').onclick = entrar;
+btnLimpar.onclick = limparBusca;
 document.addEventListener('click', function (e) {
   if (!boxBusca.contains(e.target)) listaBusca.style.display = 'none';
 });
@@ -477,6 +637,7 @@ document.addEventListener('click', function (e) {
   var fonteCoord = new ol.source.Vector();
   map.addLayer(new ol.layer.Vector({
     source: fonteCoord,
+    interactive: false,
     zIndex: 9997,
     style: new ol.style.Style({
       image: new ol.style.Circle({
@@ -497,16 +658,18 @@ document.addEventListener('click', function (e) {
     '<div><div id="coordTexto" style="font-size:16px;font-weight:bold"></div>' +
     '<div id="coordQuadra" style="color:#555;margin-top:2px"></div></div>' +
     '<button id="coordFechar" aria-label="Fechar" style="border:0;background:none;font-size:20px;line-height:1;cursor:pointer;padding:0 0 0 12px">×</button></div>' +
-    '<div style="display:flex;gap:8px;margin-top:10px">' +
-    '<button id="coordCopiar" style="flex:1;padding:8px;border:0;border-radius:4px;background:#1e88e5;color:#fff;font-size:14px;cursor:pointer">Copiar</button>' +
-    '<a id="coordMaps" target="_blank" rel="noopener" style="flex:1;padding:8px;border-radius:4px;background:#eee;color:#222;text-align:center;text-decoration:none">Abrir no Google Maps</a></div>';
+    '<div style="display:flex;gap:6px;margin-top:10px">' +
+    '<button id="coordCopiar" style="flex:1;padding:8px 4px;border:0;border-radius:4px;background:#1e88e5;color:#fff;font-size:13px;cursor:pointer">Copiar</button>' +
+    '<button id="coordLink" style="flex:1;padding:8px 4px;border:0;border-radius:4px;background:#1e88e5;color:#fff;font-size:13px;cursor:pointer">Copiar link</button>' +
+    '<a id="coordMaps" target="_blank" rel="noopener" style="flex:1;padding:8px 4px;border-radius:4px;background:#eee;color:#222;text-align:center;text-decoration:none;font-size:13px">Google Maps</a></div>';
   document.body.appendChild(cartao);
 
   var textoEl = document.getElementById('coordTexto');
   var quadraEl = document.getElementById('coordQuadra');
   var btnCopiar = document.getElementById('coordCopiar');
   var linkMaps = document.getElementById('coordMaps');
-  var atual = '';
+  var btnLink = document.getElementById('coordLink');
+  var atual = '', linkAtual = '';
 
   function copiar(texto) {
     function fallback() {
@@ -560,6 +723,8 @@ document.addEventListener('click', function (e) {
     var q = quadraDoPonto(coord);
     quadraEl.textContent = q ? 'Quadra ' + q : 'Fora das quadras mapeadas';
     linkMaps.href = 'https://www.google.com/maps?q=' + ll[1].toFixed(6) + ',' + ll[0].toFixed(6);
+    // link deste mapa já aberto no ponto (o parâmetro ?ll= é lido pelo script do pino)
+    linkAtual = location.origin + location.pathname + '?ll=' + ll[1].toFixed(6) + ',' + ll[0].toFixed(6);
     var info = document.getElementById('infoPino');
     if (info) info.style.display = 'none';
     cartao.style.display = 'block';
@@ -574,6 +739,14 @@ document.addEventListener('click', function (e) {
   }
 
   window.mostrarCoordenada = abrir;                      // usado pela caixa de busca
+  window.fecharCoordenada = fechar;                      // usado pela ferramenta de medição
+  window.copiarTexto = copiar;
+  btnLink.onclick = function () {
+    copiar(linkAtual).then(function (ok) {
+      btnLink.textContent = ok ? 'Link copiado ✓' : 'Copiar link';
+      if (ok) setTimeout(function () { btnLink.textContent = 'Copiar link'; }, 2000);
+    });
+  };
   btnCopiar.onclick = function () { copiar(atual).then(marcarCopiado); };
   document.getElementById('coordFechar').onclick = fechar;
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') fechar(); });
@@ -602,6 +775,7 @@ document.addEventListener('click', function (e) {
   }
 
   vp.addEventListener('pointerdown', function (e) {
+    if (window.medindo) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;      // botão direito é tratado abaixo
     if (e.isPrimary === false) { cancelar(); return; }            // segundo dedo = zoom, cancela
     estado.x = e.clientX; estado.y = e.clientY;
@@ -634,6 +808,7 @@ document.addEventListener('click', function (e) {
   // botão direito no PC (e toque longo em alguns Androids, que também dispara contextmenu)
   vp.addEventListener('contextmenu', function (e) {
     e.preventDefault();
+    if (window.medindo) return;
     if (Date.now() - estado.quando < 1500) return;                   // já tratado pelo toque longo
     estado.quando = Date.now();
     abrirEm(e.clientX, e.clientY);
@@ -641,10 +816,299 @@ document.addEventListener('click', function (e) {
 
   // Ctrl+clique (ou Cmd+clique) no PC: atalho imediato, sem esperar
   vp.addEventListener('click', function (e) {
-    if (!(e.ctrlKey || e.metaKey)) return;
+    if (window.medindo || !(e.ctrlKey || e.metaKey)) return;
     estado.quando = Date.now();
     abrirEm(e.clientX, e.clientY);
     fecharPopupQgis();
+  });
+})();
+</script>
+<script>
+// ================= MEDIÇÃO DE DISTÂNCIA E ÁREA =================
+// Cálculo esférico (não usa as medidas da projeção do mapa, que distorcem ~6% em distância e ~13% em área aqui).
+(function () {
+  // >>> geodesia
+  var R = 6371008.8;
+  function rad(x) { return x * Math.PI / 180; }
+  function distancia(a, b) {
+    var A = ol.proj.toLonLat(a), B = ol.proj.toLonLat(b);
+    var f1 = rad(A[1]), f2 = rad(B[1]), dl = rad(B[0] - A[0]);
+    var h = Math.pow(Math.sin((f2 - f1) / 2), 2) + Math.cos(f1) * Math.cos(f2) * Math.pow(Math.sin(dl / 2), 2);
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  function areaEsferica(cs) {              // cs = vértices sem repetir o primeiro
+    var s = 0, n = cs.length;
+    for (var i = 0; i < n; i++) {
+      var a = ol.proj.toLonLat(cs[i]), b = ol.proj.toLonLat(cs[(i + 1) % n]);
+      s += rad(b[0] - a[0]) * (2 + Math.sin(rad(a[1])) + Math.sin(rad(b[1])));
+    }
+    return Math.abs(s * R * R / 2);
+  }
+  // <<< geodesia
+  function fmtDist(m) {
+    return m < 1000
+      ? m.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' m'
+      : (m / 1000).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 }) + ' km';
+  }
+  function fmtArea(m2) {
+    var s = m2.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' m²';
+    if (m2 >= 10000) s += ' (' + (m2 / 10000).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' ha)';
+    return s;
+  }
+
+  var modo = 'dist', pts = [], ativo = false, modify = null, textoCopia = '';
+  window.medindo = false;
+
+  // estilos extras: esconde o balão do qgis2web e usa mira enquanto mede
+  var st = document.createElement('style');
+  st.textContent = '.medindo .ol-popup{display:none !important}' +
+    '.medindo #map, .medindo #map .ol-viewport{cursor:crosshair !important}';
+  document.head.appendChild(st);
+
+  // --- desenho ---
+  var fonteMedir = new ol.source.Vector();
+  var COR = '#e91e63';
+  function estilo(f, resolucao) {
+    var g = f.getGeometry(), t = g.getType(), out = [];
+    var halo = new ol.style.Stroke({ color: '#ffffff', width: 7 });
+    var linha = new ol.style.Stroke({ color: COR, width: 3 });
+    if (t === 'Polygon') {
+      out.push(new ol.style.Style({ stroke: halo }));
+      out.push(new ol.style.Style({ stroke: linha, fill: new ol.style.Fill({ color: 'rgba(233,30,99,0.18)' }) }));
+    } else if (t === 'LineString') {
+      out.push(new ol.style.Style({ stroke: halo }));
+      out.push(new ol.style.Style({ stroke: linha }));
+    }
+    var cs = t === 'Polygon' ? g.getCoordinates()[0] : (t === 'LineString' ? g.getCoordinates() : [g.getCoordinates()]);
+    var nv = t === 'Polygon' ? cs.length - 1 : cs.length;
+    for (var i = 0; i < nv; i++) {
+      out.push(new ol.style.Style({
+        geometry: new ol.geom.Point(cs[i]),
+        image: new ol.style.Circle({
+          radius: 6,
+          fill: new ol.style.Fill({ color: '#ffffff' }),
+          stroke: new ol.style.Stroke({ color: COR, width: 3 })
+        })
+      }));
+    }
+    // medida de cada trecho (só quando há espaço na tela)
+    for (var j = 0; j < cs.length - 1; j++) {
+      var a = cs[j], b = cs[j + 1];
+      if (Math.sqrt(Math.pow(b[0] - a[0], 2) + Math.pow(b[1] - a[1], 2)) / resolucao < 55) continue;
+      out.push(new ol.style.Style({
+        geometry: new ol.geom.Point([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]),
+        text: new ol.style.Text({
+          text: fmtDist(distancia(a, b)),
+          font: 'bold 12px sans-serif',
+          fill: new ol.style.Fill({ color: '#000' }),
+          stroke: new ol.style.Stroke({ color: '#fff', width: 4 }),
+          offsetY: -12
+        })
+      }));
+    }
+    return out;
+  }
+  map.addLayer(new ol.layer.Vector({
+    source: fonteMedir, interactive: false, zIndex: 9995, style: estilo,
+    updateWhileInteracting: true, updateWhileAnimating: true
+  }));
+
+  // --- painel ---
+  var BTN = 'padding:7px 10px;border:0;border-radius:4px;font-size:13px;cursor:pointer;';
+  var painel = document.createElement('div');
+  painel.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:10002;display:none;' +
+    'background:#fff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);padding:10px 12px;font:14px sans-serif;' +
+    'width:340px;max-width:calc(100vw - 24px)';
+  painel.innerHTML =
+    '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">' +
+    '<button id="medDist" style="' + BTN + '">Distância</button>' +
+    '<button id="medArea" style="' + BTN + '">Área</button>' +
+    '<button id="medFechar" aria-label="Fechar" style="margin-left:auto;border:0;background:none;font-size:22px;line-height:1;cursor:pointer">×</button></div>' +
+    '<div id="medResultado" style="font-size:16px;font-weight:bold;min-height:22px"></div>' +
+    '<div id="medDetalhe" style="color:#555;font-size:13px;margin:2px 0 8px"></div>' +
+    '<div style="display:flex;gap:6px">' +
+    '<button id="medDesfazer" style="' + BTN + 'background:#eee;flex:1">Desfazer</button>' +
+    '<button id="medLimpar" style="' + BTN + 'background:#eee;flex:1">Limpar</button>' +
+    '<button id="medCopiar" style="' + BTN + 'background:#1e88e5;color:#fff;flex:1">Copiar</button></div>';
+  document.body.appendChild(painel);
+
+  var elResultado = document.getElementById('medResultado');
+  var elDetalhe = document.getElementById('medDetalhe');
+  var btnDist = document.getElementById('medDist');
+  var btnArea = document.getElementById('medArea');
+  var btnCopiar = document.getElementById('medCopiar');
+  var btnMedir = document.getElementById('btnMedir');
+
+  function pintarAbas() {
+    btnDist.style.cssText = BTN + (modo === 'dist' ? 'background:#e91e63;color:#fff' : 'background:#eee');
+    btnArea.style.cssText = BTN + (modo === 'area' ? 'background:#e91e63;color:#fff' : 'background:#eee');
+  }
+
+  function atualizarPainel() {
+    var n = pts.length;
+    textoCopia = '';
+    if (modo === 'dist') {
+      if (n < 2) {
+        elResultado.textContent = 'Toque no mapa para marcar os pontos';
+        elDetalhe.textContent = n + (n === 1 ? ' ponto' : ' pontos');
+      } else {
+        var total = 0;
+        for (var i = 0; i < n - 1; i++) total += distancia(pts[i], pts[i + 1]);
+        elResultado.textContent = 'Distância: ' + fmtDist(total);
+        elDetalhe.textContent = n + ' pontos';
+        textoCopia = 'Distância: ' + fmtDist(total);
+      }
+    } else {
+      if (n < 3) {
+        elResultado.textContent = 'Marque ao menos 3 pontos';
+        elDetalhe.textContent = n + (n === 1 ? ' ponto' : ' pontos');
+      } else {
+        var per = 0;
+        for (var k = 0; k < n; k++) per += distancia(pts[k], pts[(k + 1) % n]);
+        var ar = areaEsferica(pts);
+        elResultado.textContent = 'Área: ' + fmtArea(ar);
+        elDetalhe.textContent = 'Perímetro: ' + fmtDist(per) + ' · ' + n + ' pontos';
+        textoCopia = 'Área: ' + fmtArea(ar) + ' | Perímetro: ' + fmtDist(per);
+      }
+    }
+    btnCopiar.style.opacity = textoCopia ? '1' : '.5';
+  }
+
+  function desenhar() {
+    fonteMedir.clear();
+    if (pts.length) {
+      var g;
+      if (modo === 'area' && pts.length >= 3) g = new ol.geom.Polygon([pts.concat([pts[0]])]);
+      else if (pts.length >= 2) g = new ol.geom.LineString(pts);
+      else g = new ol.geom.Point(pts[0]);
+      fonteMedir.addFeature(new ol.Feature(g));
+    }
+    atualizarPainel();
+  }
+
+  // depois de arrastar um ponto, relê os vértices a partir do desenho
+  function sincronizar() {
+    var f = fonteMedir.getFeatures()[0];
+    if (!f) return;
+    var g = f.getGeometry(), t = g.getType();
+    pts = t === 'Polygon' ? g.getCoordinates()[0].slice(0, -1) : (t === 'LineString' ? g.getCoordinates() : [g.getCoordinates()]);
+    atualizarPainel();
+  }
+
+  function ligar() {
+    ativo = true;
+    window.medindo = true;
+    document.body.classList.add('medindo');
+    if (window.fecharCoordenada) window.fecharCoordenada();   // fecha o cartão de coordenada
+    var info = document.getElementById('infoPino');
+    if (info) info.style.display = 'none';
+    modify = new ol.interaction.Modify({ source: fonteMedir });
+    modify.on('modifyend', sincronizar);
+    map.addInteraction(modify);
+    btnMedir.style.background = '#e8f0fe';
+    painel.style.display = 'block';
+    pintarAbas();
+    desenhar();
+  }
+
+  function desligar() {
+    ativo = false;
+    window.medindo = false;
+    document.body.classList.remove('medindo');
+    if (modify) { map.removeInteraction(modify); modify = null; }
+    pts = [];
+    fonteMedir.clear();
+    painel.style.display = 'none';
+    btnMedir.style.background = 'none';
+    var info = document.getElementById('infoPino');
+    if (info) info.style.display = '';
+  }
+
+  btnMedir.onclick = function () { ativo ? desligar() : ligar(); };
+  document.getElementById('medFechar').onclick = desligar;
+  btnDist.onclick = function () { modo = 'dist'; pintarAbas(); desenhar(); };
+  btnArea.onclick = function () { modo = 'area'; pintarAbas(); desenhar(); };
+  document.getElementById('medDesfazer').onclick = function () { pts.pop(); desenhar(); };
+  document.getElementById('medLimpar').onclick = function () { pts = []; desenhar(); };
+  btnCopiar.onclick = function () {
+    if (!textoCopia || !window.copiarTexto) return;
+    window.copiarTexto(textoCopia).then(function (ok) {
+      btnCopiar.textContent = ok ? 'Copiado ✓' : 'Copiar';
+      setTimeout(function () { btnCopiar.textContent = 'Copiar'; }, 2000);
+    });
+  };
+
+  // cada toque (sem arrasto) acrescenta um ponto
+  map.on('singleclick', function (e) {
+    if (!ativo) return;
+    for (var i = 0; i < pts.length; i++) {            // toque sobre um ponto existente = arrastar, não criar outro
+      var px = map.getPixelFromCoordinate(pts[i]);
+      if (px && Math.pow(px[0] - e.pixel[0], 2) + Math.pow(px[1] - e.pixel[1], 2) < 144) return;
+    }
+    pts.push(e.coordinate);
+    desenhar();
+  });
+})();
+</script>
+<script>
+// ================= REMOVE AS FERRAMENTAS NATIVAS DO QGIS2WEB =================
+// Mantém o zoom (+/-). Troque para false o que também quiser remover.
+(function () {
+  var MANTER_SELETOR_CAMADAS = true;    // botão para ligar/desligar camadas (mosaico, nomes de ruas...)
+  var MANTER_ATRIBUICAO = true;         // créditos do mapa (exigidos por algumas fontes)
+
+  function manter(c) {
+    if (c instanceof ol.control.Zoom) return true;
+    if (MANTER_ATRIBUICAO && c instanceof ol.control.Attribution) return true;
+    if (MANTER_SELETOR_CAMADAS) {
+      if (typeof ol.control.LayerSwitcher === 'function' && c instanceof ol.control.LayerSwitcher) return true;
+      if (c.element && /layer-switcher/.test(String(c.element.className))) return true;
+    }
+    return false;
+  }
+  map.getControls().getArray().slice().forEach(function (c) {
+    if (!manter(c)) map.removeControl(c);
+  });
+
+  // garantia extra por CSS, caso algum controle não esteja registrado no mapa
+  var st = document.createElement('style');
+  st.textContent = '.measure-control, .search-layer, .gcd-gl-container, .photon-geocoder-autocomplete, .geolocate-control {display:none !important}';
+  document.head.appendChild(st);
+})();
+</script>
+<script>
+// ================= DESTAQUE AO PASSAR O MOUSE NA QUADRA: SÓ CONTORNO, SEM PREENCHIMENTO =================
+(function () {
+  // desliga o destaque padrão do qgis2web (preenchimento branco por cima do mosaico)
+  try { doHighlight = false; } catch (e) {}
+  try { if (typeof featureOverlay !== 'undefined') featureOverlay.getSource().clear(); } catch (e) {}
+
+  var fonteHover = new ol.source.Vector();
+  map.addLayer(new ol.layer.Vector({
+    source: fonteHover,
+    interactive: false,
+    zIndex: 9994,
+    style: [
+      new ol.style.Style({ stroke: new ol.style.Stroke({ color: '#ffffff', width: 6 }) }),
+      new ol.style.Style({ stroke: new ol.style.Stroke({ color: '#ff9800', width: 3 }) })
+    ]
+  }));
+
+  var quadras = (typeof camadasDeQuadras === 'function') ? camadasDeQuadras() : [];
+  var atual = null;
+
+  map.on('pointermove', function (e) {
+    if (e.dragging || window.medindo) { if (atual) { fonteHover.clear(); atual = null; } return; }
+    var oe = e.originalEvent;
+    if (oe && oe.pointerType && oe.pointerType !== 'mouse') return;      // só no computador
+    var achou = null;
+    map.forEachFeatureAtPixel(e.pixel, function (f) { achou = f; return true; }, {
+      layerFilter: function (l) { return quadras.indexOf(l) >= 0 && l.get('interactive') !== false; }
+    });
+    if (achou === atual) return;
+    fonteHover.clear();
+    atual = achou;
+    if (achou) fonteHover.addFeature(new ol.Feature(achou.getGeometry().clone()));
   });
 })();
 </script>

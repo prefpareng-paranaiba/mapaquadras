@@ -902,15 +902,19 @@ document.addEventListener('click', function (e) {
     // medida de cada trecho (só quando há espaço na tela)
     for (var j = 0; j < cs.length - 1; j++) {
       var a = cs[j], b = cs[j + 1];
-      if (Math.sqrt(Math.pow(b[0] - a[0], 2) + Math.pow(b[1] - a[1], 2)) / resolucao < 55) continue;
+      var compPx = Math.sqrt(Math.pow(b[0] - a[0], 2) + Math.pow(b[1] - a[1], 2)) / resolucao;
+      var txtL = fmtDist(distancia(a, b));
+      var larg = txtL.length * 7 + 8;                    // largura aproximada do texto em 12px
+      if (compPx < Math.max(24, larg * 0.5)) continue;   // só esconde quando realmente não há espaço
+      var peq = compPx < larg;                           // lado curto: texto menor em vez de sumir
       out.push(new ol.style.Style({
         geometry: new ol.geom.Point([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]),
         text: new ol.style.Text({
-          text: fmtDist(distancia(a, b)),
-          font: 'bold 12px sans-serif',
+          text: txtL,
+          font: 'bold ' + (peq ? 10 : 12) + 'px sans-serif',
           fill: new ol.style.Fill({ color: '#000' }),
           stroke: new ol.style.Stroke({ color: '#fff', width: 4 }),
-          offsetY: -12
+          offsetY: peq ? -10 : -12
         })
       }));
     }
@@ -1292,9 +1296,11 @@ document.addEventListener('click', function (e) {
       ctx.lineWidth = 4 * k; ctx.strokeStyle = COR; ctx.stroke();
     });
 
-    // medida de cada lado: o texto acompanha a direção da linha (sempre de pé, nunca de cabeça para baixo)
-    var fsL = Math.round(W * 0.026);
-    ctx.font = 'bold ' + fsL + 'px Arial, Helvetica, sans-serif';
+    // medida de cada lado: o texto acompanha a direção da linha (sempre de pé, nunca de cabeça para baixo).
+    // Nenhuma medida some: se o lado é curto o texto encolhe; se ainda não cabe, vai para fora com uma linha-guia;
+    // e os textos evitam ficar uns sobre os outros, sobre os pontos e sobre a rosa dos ventos.
+    var fsL = Math.round(W * 0.026), fsMin = Math.round(W * 0.016);
+    var FONTE = 'Arial, Helvetica, sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     var nSeg = area ? Q.length : Q.length - 1;
     function dentroDaFigura(x, y) {                       // ponto dentro do polígono? (para colocar o texto do lado de fora)
@@ -1305,30 +1311,84 @@ document.addEventListener('click', function (e) {
       }
       return dentro;
     }
+    var DR = Math.round(W * 0.17), rosaX = W - DR / 2 - 12 * k, rosaY = DR / 2 + 12 * k;
+    var ocupado = [{ x: rosaX, y: rosaY, r: DR * 0.5 }];            // áreas que o texto deve evitar
+    Q.forEach(function (q) { ocupado.push({ x: q[0], y: q[1], r: 11 * k }); });
+    function livre(circs) {
+      for (var ci = 0; ci < circs.length; ci++) {
+        var c = circs[ci];
+        if (c.x < c.r || c.x > W - c.r || c.y < c.r || c.y > Hm - c.r) return false;
+        for (var oi = 0; oi < ocupado.length; oi++) {
+          var o = ocupado[oi], ex = c.x - o.x, ey = c.y - o.y;
+          if (ex * ex + ey * ey < (c.r + o.r) * (c.r + o.r)) return false;
+        }
+      }
+      return true;
+    }
+    var lados = [];
     for (var i = 0; i < nSeg; i++) {
       var a = Q[i], b = Q[(i + 1) % Q.length];
       var ddx = b[0] - a[0], ddy = b[1] - a[1], comp = Math.sqrt(ddx * ddx + ddy * ddy);
-      if (comp < fsL * 3.5) continue;                     // lado curto: sem espaço
+      if (comp < 2) continue;                              // dois pontos praticamente no mesmo lugar
       var mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
       var nx = -ddy / comp, ny = ddx / comp;              // perpendicular à linha
       if (area) {
         if (dentroDaFigura(mx + nx * 4 * k, my + ny * 4 * k)) { nx = -nx; ny = -ny; }   // aponta para fora
       } else if (ny > 0) { nx = -nx; ny = -ny; }          // medida de distância: texto acima da linha
-      var desloc = fsL * 0.85;
-      var tx = mx + nx * desloc, ty = my + ny * desloc;
       var ang = Math.atan2(ddy, ddx);
       if (ang > Math.PI / 2) ang -= Math.PI; else if (ang < -Math.PI / 2) ang += Math.PI;   // texto sempre legível
-      var txt = fmtDist(distancia(pontos[i], pontos[(i + 1) % pontos.length]));
-      ctx.save();
-      ctx.translate(tx, ty); ctx.rotate(ang);
-      ctx.lineWidth = 6 * k; ctx.strokeStyle = '#ffffff'; ctx.strokeText(txt, 0, 0);
-      ctx.fillStyle = '#000000'; ctx.fillText(txt, 0, 0);
-      ctx.restore();
+      lados.push({ comp: comp, mx: mx, my: my, nx: nx, ny: ny, ang: ang,
+                   txt: fmtDist(distancia(pontos[i], pontos[(i + 1) % pontos.length])) });
     }
+    lados.sort(function (p, q) { return q.comp - p.comp; });   // os lados maiores escolhem o lugar primeiro
+    lados.forEach(function (L) {
+      var fs = fsL;
+      ctx.font = 'bold ' + fs + 'px ' + FONTE;
+      var tw = ctx.measureText(L.txt).width, disp = L.comp * 0.9;
+      if (tw > disp) {                                    // lado curto: encolhe o texto (até o mínimo legível)
+        fs = Math.max(fsMin, Math.floor(fsL * disp / tw));
+        ctx.font = 'bold ' + fs + 'px ' + FONTE;
+        tw = ctx.measureText(L.txt).width;
+      }
+      var cosA = Math.cos(L.ang), sinA = Math.sin(L.ang);
+      var passo = fs * 0.7, qtd = Math.max(1, Math.round(tw / passo));
+      function circulos(tx, ty) {
+        var cs = [];
+        for (var u = 0; u < qtd; u++) {
+          var t = (u + 0.5) / qtd * tw - tw / 2;
+          cs.push({ x: tx + t * cosA, y: ty + t * sinA, r: fs * 0.55 });
+        }
+        return cs;
+      }
+      var escolha = null, mults = [0.85, 1.9, 3, 4.2], primeira = null;
+      for (var mi = 0; mi < mults.length && !escolha; mi++) {
+        for (var lado = 1; lado >= -1 && !escolha; lado -= 2) {
+          var d = fs * mults[mi] * lado;
+          var cand = { x: L.mx + L.nx * d, y: L.my + L.ny * d, guia: mi > 0 };
+          if (!primeira && (tw <= disp || mi > 0)) primeira = cand;
+          if (livre(circulos(cand.x, cand.y))) escolha = cand;
+        }
+      }
+      if (!escolha) escolha = primeira || { x: L.mx + L.nx * fs * 0.85, y: L.my + L.ny * fs * 0.85, guia: false };
+      circulos(escolha.x, escolha.y).forEach(function (c) { ocupado.push(c); });
+      if (escolha.guia) {                                 // linha-guia do meio do lado até o texto
+        var gx = escolha.x - L.nx * fs * 0.5 * Math.sign((escolha.x - L.mx) * L.nx + (escolha.y - L.my) * L.ny || 1);
+        var gy = escolha.y - L.ny * fs * 0.5 * Math.sign((escolha.x - L.mx) * L.nx + (escolha.y - L.my) * L.ny || 1);
+        ctx.beginPath(); ctx.moveTo(L.mx, L.my); ctx.lineTo(gx, gy);
+        ctx.lineWidth = 4 * k; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+        ctx.lineWidth = 1.6 * k; ctx.strokeStyle = '#000000'; ctx.stroke();
+      }
+      ctx.save();
+      ctx.translate(escolha.x, escolha.y); ctx.rotate(L.ang);
+      ctx.font = 'bold ' + fs + 'px ' + FONTE;
+      ctx.lineWidth = 6 * k; ctx.strokeStyle = '#ffffff'; ctx.strokeText(L.txt, 0, 0);
+      ctx.fillStyle = '#000000'; ctx.fillText(L.txt, 0, 0);
+      ctx.restore();
+    });
 
     // rosa dos ventos no canto superior direito, sem fundo; um brilho branco suave destaca as letras sobre a foto
     if (rosa) {
-      var D = Math.round(W * 0.17), rx = W - D / 2 - 12 * k, ry = D / 2 + 12 * k;
+      var D = DR, rx = rosaX, ry = rosaY;
       ctx.save();
       ctx.translate(rx, ry); ctx.rotate(rot);
       ctx.shadowColor = 'rgba(255,255,255,0.95)';
@@ -1641,6 +1701,12 @@ document.addEventListener('click', function (e) {
     'filter:drop-shadow(0 0 2px #fff) drop-shadow(0 0 3px #fff) drop-shadow(0 0 4px rgba(255,255,255,.9))';   // brilho branco no lugar do fundo
   el.appendChild(img);
   document.body.appendChild(el);
+  // celular (tela estreita): a barra de busca (com 📍 e 📏) ocupa o topo até a borda direita,
+  // então a rosa desce para logo abaixo dela; z-index menor para a lista de sugestões ficar por cima
+  var stRosa = document.createElement('style');
+  stRosa.textContent = '#rosaVentos{z-index:9999 !important}' +
+    '@media (max-width:480px){#rosaVentos{top:58px !important}}';
+  document.head.appendChild(stRosa);
 
   function atualizar() {
     img.style.transform = 'rotate(' + (view.getRotation() || 0) + 'rad)';
@@ -2018,8 +2084,27 @@ document.addEventListener('click', function (e) {
   }
   view.on('change:resolution', pintarZoom);
   pintarZoom();
-  document.getElementById('zMais').onclick = function () { view.animate({ zoom: view.getZoom() + 1, duration: 200 }); };
-  document.getElementById('zMenos').onclick = function () { view.animate({ zoom: view.getZoom() - 1, duration: 200 }); };
+  // passo de 0,5 em 0,5 (e se o zoom estiver "quebrado" por causa do pinça, vai para o próximo múltiplo de 0,5)
+  var PASSO_ZOOM = 0.5;
+  function irParaZoom(z) {
+    var mx = view.getMaxZoom(), mn = view.getMinZoom();
+    if (isFinite(mx)) z = Math.min(z, mx);
+    if (isFinite(mn)) z = Math.max(z, mn);
+    view.animate({ zoom: z, duration: 200 });
+  }
+  document.getElementById('zMais').onclick = function () {
+    irParaZoom((Math.floor(view.getZoom() / PASSO_ZOOM + 1e-6) + 1) * PASSO_ZOOM);
+  };
+  document.getElementById('zMenos').onclick = function () {
+    irParaZoom((Math.ceil(view.getZoom() / PASSO_ZOOM - 1e-6) - 1) * PASSO_ZOOM);
+  };
+  // duplo toque/clique e teclado (+/−) também passam a usar 0,5
+  try {
+    map.getInteractions().getArray().slice().forEach(function (i) {
+      if (i instanceof ol.interaction.DoubleClickZoom) { map.removeInteraction(i); map.addInteraction(new ol.interaction.DoubleClickZoom({ delta: PASSO_ZOOM, duration: 200 })); }
+      if (i instanceof ol.interaction.KeyboardZoom) { map.removeInteraction(i); map.addInteraction(new ol.interaction.KeyboardZoom({ delta: PASSO_ZOOM, duration: 200 })); }
+    });
+  } catch (e) { console.warn('Zoom 0,5:', e); }
 
   // ---------- localização em tempo real ----------
   var btnLoc = document.getElementById('btnLoc'), locPrec = document.getElementById('locPrec');

@@ -11,7 +11,7 @@
   };
 
   // ---- 1) Estilo das quadras: objetos criados UMA vez (o original recriava 1.458 estilos + textos a cada quadro) ----
-  var lyrQ = window.lyr_QuadrasNOVOquadras_v515b_1;
+  var lyrQ = window.lyr_Quadras_1;
   if (lyrQ) {
     var traco = new ol.style.Stroke({ color: 'rgba(238,255,0,1.0)', lineCap: 'square', lineJoin: 'bevel', width: 2.85 });
     var soContorno = [new ol.style.Style({ stroke: traco })];
@@ -38,9 +38,10 @@
 
   // ---- 2) Google híbrido: limita o zoom dos tiles, sem animação de fade (menos redesenho) ----
   if (window.lyr_GoogleHybrid_0) {
+    window.lyr_GoogleHybrid_0.set('title', 'Google Satélite');   // base só com imagem (lyrs=s); os nomes vêm da camada "Nomes de ruas"
     window.lyr_GoogleHybrid_0.setSource(new ol.source.XYZ({
       attributions: ' ',
-      url: 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+      url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
       maxZoom: PERF.googleMaxZoom,
       transition: 0
     }));

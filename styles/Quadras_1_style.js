@@ -1,7 +1,7 @@
 var size = 0;
 var placement = 'point';
 
-var style_QuadrasNOVOquadras_v515b_1 = function(feature, resolution){
+var style_Quadras_1 = function(feature, resolution){
     var context = {
         feature: feature,
         variables: {}
@@ -23,7 +23,7 @@ var style_QuadrasNOVOquadras_v515b_1 = function(feature, resolution){
         labelText = String(feature.get("Quadra"));
     }
     var style = [ new ol.style.Style({
-        stroke: new ol.style.Stroke({color: 'rgba(238,255,0,1.0)', lineDash: null, lineCap: 'square', lineJoin: 'bevel', width: 2.8499999999999996}),
+        stroke: new ol.style.Stroke({color: 'rgba(251,251,14,1.0)', lineDash: null, lineCap: 'square', lineJoin: 'bevel', width: 2.8499999999999996}),
         text: createTextStyle(feature, resolution, labelText, labelFont,
                               labelFill, placement, bufferColor,
                               bufferWidth, textAlign, offsetX, offsetY, overflow, repeat)

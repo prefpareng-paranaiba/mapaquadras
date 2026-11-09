@@ -77,8 +77,8 @@
         <script src="./perf.js"></script>
 		<script>
 var mosaicos = [
-  { nome: 'Santa Mônica (drone)', pasta: 'santa_monica', minZoom: 13, maxZoom: 20, extensao: [-51.20305, -19.68226, -51.19432, -19.67535] /* [oeste, sul, leste, norte] em graus; PREENCHA p/ evitar pedidos 404 fora do mosaico */ }
-  // outro bairro: { nome: 'Outro Bairro (drone)', pasta: 'outro_bairro', minZoom: 13, maxZoom: 20 }
+  { nome: 'Santa Mônica (drone)', pasta: 'santa_monica', minZoom: 15, maxZoom: 21, extensao: [-51.20305, -19.68226, -51.19432, -19.67535] /* [oeste, sul, leste, norte] em graus; PREENCHA p/ evitar pedidos 404 fora do mosaico */ }
+  // outro bairro: { nome: 'Outro Bairro (drone)', pasta: 'outro_bairro', minZoom: 15, maxZoom: 21 }
 ];
 
 mosaicos.forEach(function (m) {
@@ -92,7 +92,7 @@ mosaicos.forEach(function (m) {
       tileUrlFunction: function (tc) {
         var z = tc[0], x = tc[1], y = tc[2];
         var yTms = (1 << z) - 1 - y;   // gdal2tiles sem --xyz usa Y invertido
-        return m.pasta + '/' + z + '/' + x + '/' + yTms + '.png';
+        return m.pasta + '/' + z + '/' + x + '/' + yTms + '.webp';
       }
     })
   };
@@ -289,7 +289,7 @@ map.addLayer(camadaDestaque);
 
 // O destaque (quadra ou rua) só serve para a pessoa achar o objeto: depois de enquadrado, some sozinho (esmaece).
 // Esc em qualquer lugar do mapa também sai da pesquisa e remove o destaque na hora.
-var DESTAQUE_SEGUNDOS = 2;     // 0 = o destaque fica até apertar Esc, no X, ou fazer outra busca
+var DESTAQUE_SEGUNDOS = 0;     // 0 = o destaque fica até apertar Esc, no X, ou fazer outra busca
 var _tFimDestaque = null, _tFade = null;
 function cancelarFimDestaque() {
   clearTimeout(_tFimDestaque); clearInterval(_tFade);

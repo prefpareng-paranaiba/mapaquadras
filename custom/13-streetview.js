@@ -1,7 +1,7 @@
 // ================= STREET VIEW EM PAINEL (lado a lado, sem API e sem chave) =================
 // Marque um ponto no mapa (📍 / toque longo / botão direito) e toque em "Street View" no cartão da coordenada.
 // O marcador azul mostra o ponto; ARRASTE o marcador no mapa para mudar o lugar do Street View.
-// (Não existe jeito, sem a API paga do Google, de a página saber por onde você "andou" dentro do quadro do Street View.)
+// 
 (function () {
   var mapaEl = document.getElementById('map');
   var view = map.getView();

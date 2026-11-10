@@ -175,7 +175,8 @@ function centroDaRua(g) {
   var pt = maior.geometry[Math.floor(maior.geometry.length / 2)];
   return { lat: pt.lat, lon: pt.lon };
 }
-function ruasLocais(q) {
+// grupos de ruas (do índice local) que casam com o texto, do melhor para o pior
+function acharRuas(q) {
   var toks = semAcento(q).replace(/[.,]/g, ' ').split(/\s+/).filter(Boolean);
   if (toks.length > 1 && TIPOS_VIA.indexOf(toks[0]) >= 0) toks.shift();       // "rua com" -> "com"
   if (!toks.length || (toks.length === 1 && TIPOS_VIA.indexOf(toks[0]) >= 0 && toks[0].length < 4)) return [];
@@ -186,10 +187,127 @@ function ruasLocais(q) {
     achadas.push({ g: g, pontos: g.nucleo.indexOf(alvo) === 0 ? 0 : 1 });
   });
   achadas.sort(function (a, b) { return a.pontos - b.pontos || a.g.nucleo.length - b.g.nucleo.length; });
+  return achadas;
+}
+function ruasLocais(q) {
+  var achadas = acharRuas(q);
   return achadas.slice(0, 6).map(function (a) {
     var c = centroDaRua(a.g);
     return { tipo: 'endereco', rotulo: a.g.nome, detalhe: 'Rua · Paranaíba', lat: c.lat, lon: c.lon, rua: a.g.nome, local: true };
   });
+}
+
+// --- cruzamentos: "rua A x rua B" (também "+", "&" ou "×") → ponto onde as duas ruas se encontram ---
+// Usa os traçados do ruas.js. Procura cruzamento geométrico entre os segmentos; se as ruas só "quase" se tocam
+// (T, ou pequena folga no OpenStreetMap), aceita o ponto mais próximo dentro de TOLERANCIA_CRUZ metros.
+var TOLERANCIA_CRUZ = 25;
+function lerCruzamento(q) {
+  if (!/(\s[x×](\s|$)|[+&])/i.test(q)) return null;
+  var p = q.split(/\s+[x×](?:\s+|$)|\s*[+&]\s*/i).map(function (s) { return s.trim(); });
+  if (p.length < 2 || !p[0]) return null;
+  if (TIPOS_VIA.indexOf(semAcento(p[0])) >= 0) return null;        // "Rua x" etc.: é nome de rua, não cruzamento
+  return [p[0], p[1]];
+}
+function _m(p) {                                                    // lat/lon → metros (aproximação plana local)
+  return [p.lon * Math.cos(CENTRO.lat * Math.PI / 180) * 111320, p.lat * 110540];
+}
+function _inv(x, y) {
+  return { lon: x / (Math.cos(CENTRO.lat * Math.PI / 180) * 111320), lat: y / 110540 };
+}
+function _cruzaSeg(a, b, c, d) {                                    // interseção dos segmentos ab e cd (ou null)
+  var rx = b[0] - a[0], ry = b[1] - a[1], sx = d[0] - c[0], sy = d[1] - c[1];
+  var den = rx * sy - ry * sx;
+  if (Math.abs(den) < 1e-9) return null;                           // paralelos
+  var t = ((c[0] - a[0]) * sy - (c[1] - a[1]) * sx) / den;
+  var u = ((c[0] - a[0]) * ry - (c[1] - a[1]) * rx) / den;
+  var e = 0.02;
+  if (t < -e || t > 1 + e || u < -e || u > 1 + e) return null;
+  return [a[0] + t * rx, a[1] + t * ry];
+}
+function _distPtSeg(p, a, b) {                                      // distância e ponto mais próximo de p no segmento ab
+  var dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+  var t = l2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2)) : 0;
+  var q = [a[0] + t * dx, a[1] + t * dy];
+  return { d: Math.hypot(p[0] - q[0], p[1] - q[1]), q: q };
+}
+function _caixa(pts, folga) {
+  var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  pts.forEach(function (p) { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); });
+  return [x0 - folga, y0 - folga, x1 + folga, y1 + folga];
+}
+function interseccoesDeRuas(gA, gB) {
+  var achados = [], proximos = [];
+  var LA = gA.els.map(function (el) { var m = el.geometry.map(_m); return { m: m, bb: _caixa(m, TOLERANCIA_CRUZ) }; });
+  var LB = gB.els.map(function (el) { var m = el.geometry.map(_m); return { m: m, bb: _caixa(m, TOLERANCIA_CRUZ) }; });
+  LA.forEach(function (a) {
+    LB.forEach(function (b) {
+      if (a.bb[0] > b.bb[2] || b.bb[0] > a.bb[2] || a.bb[1] > b.bb[3] || b.bb[1] > a.bb[3]) return;   // longe: ignora
+      var i, j, r;
+      for (i = 0; i < a.m.length - 1; i++) {
+        for (j = 0; j < b.m.length - 1; j++) {
+          r = _cruzaSeg(a.m[i], a.m[i + 1], b.m[j], b.m[j + 1]);
+          if (r) achados.push(r);
+        }
+      }
+      // quase-encontro: vértice de uma rua perto de um segmento da outra
+      a.m.forEach(function (p) {
+        for (j = 0; j < b.m.length - 1; j++) {
+          var h = _distPtSeg(p, b.m[j], b.m[j + 1]);
+          if (h.d <= TOLERANCIA_CRUZ) proximos.push({ d: h.d, p: [(p[0] + h.q[0]) / 2, (p[1] + h.q[1]) / 2] });
+        }
+      });
+      b.m.forEach(function (p) {
+        for (i = 0; i < a.m.length - 1; i++) {
+          var h = _distPtSeg(p, a.m[i], a.m[i + 1]);
+          if (h.d <= TOLERANCIA_CRUZ) proximos.push({ d: h.d, p: [(p[0] + h.q[0]) / 2, (p[1] + h.q[1]) / 2] });
+        }
+      });
+    });
+  });
+  var base = achados;
+  if (!base.length && proximos.length) {                           // sem cruzamento exato: usa o ponto mais próximo
+    proximos.sort(function (x, y) { return x.d - y.d; });
+    base = [proximos[0].p];
+  }
+  var unicos = [];                                                 // junta pontos a menos de 30 m (mesmo cruzamento)
+  base.forEach(function (p) {
+    if (!unicos.some(function (u) { return Math.hypot(u[0] - p[0], u[1] - p[1]) < 30; })) unicos.push(p);
+  });
+  return unicos.map(function (p) { return _inv(p[0], p[1]); });
+}
+
+async function mostrarCruzamentos(par, meu) {
+  if (!par[1] || par[1].length < 2) {
+    mostrar([{ tipo: 'aviso', rotulo: 'Digite a outra rua…', detalhe: 'Ex.: ' + par[0] + ' x nome da outra rua' }]);
+    return;
+  }
+  await carregarRuasLocal();
+  if (meu !== contador) return;
+  if (!indiceDeRuas().length) {
+    mostrar([{ tipo: 'aviso', rotulo: 'Lista de ruas (ruas.js) não disponível' }]);
+    return;
+  }
+  var A = acharRuas(par[0]).slice(0, 4), B = acharRuas(par[1]).slice(0, 4), res = [];
+  A.forEach(function (a) {
+    B.forEach(function (b) {
+      if (a.g === b.g || a.g.nucleo === b.g.nucleo) return;
+      var pts = interseccoesDeRuas(a.g, b.g);
+      pts.slice(0, 4).forEach(function (pt, k) {
+        var dup = res.some(function (r) {
+          return r.chave === [a.g.nucleo, b.g.nucleo].sort().join('|') &&
+                 Math.hypot(_m(r)[0] - _m(pt)[0], _m(r)[1] - _m(pt)[1]) < 30;
+        });
+        if (dup) return;
+        res.push({ tipo: 'cruzamento', rotulo: a.g.nome + ' × ' + b.g.nome,
+                   detalhe: 'Cruzamento · Paranaíba' + (pts.length > 1 ? ' (' + (k + 1) + ' de ' + pts.length + ')' : ''),
+                   lat: pt.lat, lon: pt.lon, els: a.g.els.concat(b.g.els),
+                   chave: [a.g.nucleo, b.g.nucleo].sort().join('|') });
+      });
+    });
+  });
+  mostrar(res.length ? res.slice(0, 6)
+    : [{ tipo: 'aviso', rotulo: 'Nenhum cruzamento encontrado entre essas ruas',
+         detalhe: A.length && B.length ? 'Elas não se encontram nos dados do mapa' : 'Confira o nome das ruas' }]);
 }
 
 // --- Google Maps (abre em outra aba): útil para achar o NÚMERO da casa, que o OpenStreetMap quase não tem ---
@@ -207,7 +325,7 @@ function mostrar(lista) {
   lista.forEach(function (s, i) {
     var item = document.createElement('div');
     item.style.cssText = 'padding:8px 10px;cursor:pointer;border-bottom:1px solid #eee';
-    var icone = s.tipo === 'quadra' ? '🟨 ' : (s.tipo === 'endereco' ? (s.local ? '🛣️ ' : '📍 ') : (s.tipo === 'coordenada' ? '🎯 ' : (s.tipo === 'google' ? '🔎 ' : '')));
+    var icone = s.tipo === 'quadra' ? '🟨 ' : (s.tipo === 'endereco' ? (s.local ? '🛣️ ' : '📍 ') : (s.tipo === 'coordenada' ? '🎯 ' : (s.tipo === 'google' ? '🔎 ' : (s.tipo === 'cruzamento' ? '🔀 ' : ''))));
     item.innerHTML = icone + '<b>' + s.rotulo + '</b>' +
       (s.detalhe ? '<br><small style="color:#666">' + s.detalhe + '</small>' : '');
     if (s.tipo === 'aviso') {
@@ -241,6 +359,17 @@ function escolher(i) {
     s.features.forEach(function (f) { ol.extent.extend(ext, f.getGeometry().getExtent()); });
     s.features.forEach(function (f) { fonteDestaque.addFeature(new ol.Feature(f.getGeometry().clone())); });
     map.getView().fit(ext, { padding: [80, 80, 80, 80], maxZoom: 19 });
+    agendarFimDestaque();
+  } else if (s.tipo === 'cruzamento') {
+    s.els.forEach(function (el) {                      // desenha as duas ruas e marca o cruzamento
+      if (!el.geometry || el.geometry.length < 2) return;
+      fonteDestaque.addFeature(new ol.Feature(new ol.geom.LineString(
+        el.geometry.map(function (g) { return ol.proj.fromLonLat([g.lon, g.lat]); }))));
+    });
+    var cx = ol.proj.fromLonLat([s.lon, s.lat]);
+    fonteBusca.addFeature(new ol.Feature(new ol.geom.Point(cx)));
+    map.getView().setCenter(cx);
+    map.getView().setZoom(19);
     agendarFimDestaque();
   } else if (s.tipo === 'endereco') {
     var coord = ol.proj.fromLonLat([s.lon, s.lat]);
@@ -305,7 +434,11 @@ function carregarRuasJson() {                                  // alternativa: r
   return fetch('ruas.json')
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
-      if (d && d.elements) console.info('[ruas.json] carregado:', d.elements.length, 'trechos');
+      if (d && d.elements) {
+        console.info('[ruas.json] carregado:', d.elements.length, 'trechos');
+        window.RUAS_OSM = d;                                   // o índice de ruas e os cruzamentos leem daqui
+        setTimeout(indiceDeRuas, 0);
+      }
       else console.warn('Sem ruas.js/ruas.json; usando consulta online');
       return d;
     })
@@ -483,6 +616,10 @@ async function atualizar() {
               detalhe: 'Ir para esta coordenada', lat: coordTxt.lat, lon: coordTxt.lon }]);
     return;
   }
+  // "rua A x rua B": cruzamento entre duas ruas
+  var par = lerCruzamento(q);
+  if (par) { await mostrarCruzamentos(par, meu); return; }
+
   var locais = quadrasLocais(q);
 
   // parece número de quadra (ex.: 4022, 137A, 137-A): busca só nas quadras

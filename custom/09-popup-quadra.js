@@ -217,29 +217,12 @@
 
     function sair() {
       window.removeEventListener('resize', layout);
-      document.removeEventListener('keydown', tecla);
       fr.src = 'about:blank';
       if (fundo.parentNode) fundo.parentNode.removeChild(fundo);
       if (window.dock) { dock.pdf = null; dock.pdfRefit = null; dock.layout(); }   // devolve o espaço (ou o Street View ocupa tudo)
       else { mapaEl.style.width = ''; mapaEl.style.height = ''; map.updateSize(); }
       painelPDF = null;
     }
-    function tecla(e) { 
-      if (e.key === 'Escape') {
-        var closer = document.getElementById('popup-closer');
-        var conteudo = document.getElementById('popup-content');
-        
-        // Se o pop-up da quadra estiver aberto, fecha ele primeiro
-        if (conteudo && conteudo.innerHTML.trim() !== '' && closer) {
-          closer.click();
-        } 
-        // Caso contrário, se o painel do PDF estiver aberto, fecha o PDF
-        else if (painelPDF) {
-          sair();
-        }
-      } 
-    }
-
     function trocar(novoId, original, tit) {
       idAtual = novoId; tentativa = 0; rot = 0; nw = 0; nh = 0;
       rotulo.textContent = tit || 'PDF';
@@ -253,7 +236,6 @@
     window.fecharPainelPDF = function () { if (painelPDF) painelPDF.sair(); };   // usado pelo painel do Street View
 
     window.addEventListener('resize', layout);
-    document.addEventListener('keydown', tecla);
     fundo.appendChild(barra); fundo.appendChild(palco);
     document.body.appendChild(fundo);
     layout();
@@ -316,6 +298,41 @@
       });
     });
   }
+
+  // ---------- ESC: fecha por camadas (PDF → popup + seleção da quadra) ----------
+  // O ouvinte é único e fica sempre ativo (antes só existia com o PDF aberto).
+  function popupAberto() {
+    var el = document.getElementById('popup');
+    return !!el && el.offsetWidth > 0 && el.offsetHeight > 0 && getComputedStyle(el).display !== 'none';
+  }
+  function fecharPopupELimparSelecao() {
+    var closer = document.getElementById('popup-closer');
+    if (closer) closer.click();
+    var el = document.getElementById('popup');
+    if (el) el.style.display = 'none';
+    try {
+      map.getOverlays().getArray().forEach(function (o) {
+        var e = o.getElement && o.getElement();
+        if (e && e.id === 'popup') o.setPosition(undefined);
+      });
+    } catch (e) { console.warn(e); }
+    // tira o contorno laranja da quadra selecionada (camada de destaque do QGIS2Web)
+    try { if (typeof featureOverlay !== 'undefined' && featureOverlay.getSource) featureOverlay.getSource().clear(); } catch (e) {}
+    try { if (typeof highlight !== 'undefined') highlight = undefined; } catch (e) {}
+  }
+  function teclaEsc(e) {
+    if (e.key !== 'Escape') return;
+    var t = e.target && e.target.tagName;
+    if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT') return;   // não atrapalha a caixa de busca
+    if (painelPDF) {                       // 1º ESC: fecha o PDF (a quadra continua selecionada)
+      painelPDF.sair();
+      e.preventDefault();
+    } else if (popupAberto()) {            // ESC seguinte (ou só quadra selecionada): fecha popup e tira a seleção
+      fecharPopupELimparSelecao();
+      e.preventDefault();
+    }
+  }
+  document.addEventListener('keydown', teclaEsc);
 
   function iniciar() {
     var conteudo = document.getElementById('popup-content');

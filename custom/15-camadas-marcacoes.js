@@ -10,6 +10,7 @@
   var CH_MARC = 'mq.marcacoes.v1';
   var CH_CAM = 'mq.camadas.v1';
   var CH_COR = 'mq.cor.v1';
+  var CH_PASTA = 'mq.pastas.v1';
   var CORES = ['#e53935', '#fb8c00', '#fdd835', '#43a047', '#00acc1', '#1e88e5', '#8e24aa', '#ffffff'];
   var MAX_IMPORT_AVISO = 2000;
 
@@ -149,6 +150,8 @@
     return r;
   }
   function nomeCamada(l) { return String(l.get('title')).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim(); }
+  var pastasAberta = {};
+  try { pastasAberta = JSON.parse(lerLS(CH_PASTA) || '{}') || {}; } catch (e) { pastasAberta = {}; }
   var estadoCam = {};
   try { estadoCam = JSON.parse(lerLS(CH_CAM) || '{}') || {}; } catch (e) { estadoCam = {}; }
   function salvarCam() { gravarLS(CH_CAM, JSON.stringify(estadoCam)); }
@@ -217,6 +220,15 @@
       'padding:10px 12px;display:none;font:14px/1.3 Arial,sans-serif;max-width:94vw;box-sizing:border-box;text-align:center}' +
     '#mqBarra .mq-btn{border:1px solid #bbb;background:#fafafa;border-radius:8px;padding:10px 10px;white-space:nowrap;font:inherit;cursor:pointer;margin:4px 3px 0}' +
     '#mqBarra .mq-btn.pri{background:#1565c0;border-color:#1565c0;color:#fff}' +
+    '#mqPainel .mq-sw:indeterminate{background:#7aa7de}' +
+    '#mqPainel .mq-sw:indeterminate::after{transform:translateX(9px)}' +
+    '#mqPainel .mq-pasta{margin-bottom:10px}' +
+    '#mqPainel .mq-pasta-cab{display:flex;align-items:center;gap:8px;min-height:40px;padding:4px 4px 4px 2px;cursor:pointer;-webkit-tap-highlight-color:transparent;border-bottom:1px solid #e3e7ed}' +
+    '#mqPainel .mq-seta{width:18px;flex:none;text-align:center;color:#5b6573;font-size:13px}' +
+    '#mqPainel .mq-pasta-ic{font-size:20px;flex:none}' +
+    '#mqPainel .mq-pasta-nome{flex:1;min-width:0;font-weight:bold;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+    '#mqPainel .mq-cont{flex:none;font-size:12px;color:#5b6573;background:#eef1f5;border-radius:10px;padding:2px 8px;font-variant-numeric:tabular-nums}' +
+    '#mqPainel .mq-pasta-corpo{margin:8px 0 0 9px;padding-left:8px;border-left:2px solid #dbe3ef}' +
     '.desenhando .ol-popup{display:none !important}' +
     '.desenhando #map, .desenhando #map .ol-viewport{cursor:crosshair !important}'
   });
@@ -312,14 +324,79 @@
       return card;
     }
 
-    ls.forEach(function (l) {
-      var nome = nomeCamada(l);
-      corpo.appendChild(cartao(nome, iconeCamada(nome), l.getVisible(), l.getOpacity(),
-        function (v) { l.setVisible(v); (estadoCam[nome] = estadoCam[nome] || {}).v = v; salvarCam(); },
-        function (o) { l.setOpacity(o); (estadoCam[nome] = estadoCam[nome] || {}).o = o; salvarCam(); }));
+    // ---- pastas estilo Google Earth ----
+    function ehMosaico(l) {
+      var g = l.get('pasta');                       // opcional: l.set('pasta','mosaicos'|'poligonos') força a pasta
+      if (g === 'mosaicos') return true;
+      if (g === 'poligonos') return false;
+      return (ol.layer.Tile && l instanceof ol.layer.Tile) ||
+             (ol.layer.Image && l instanceof ol.layer.Image) ||
+             (ol.layer.WebGLTile && l instanceof ol.layer.WebGLTile);
+    }
+    function ligarCamada(l, v) {
+      var n = nomeCamada(l);
+      l.setVisible(v); (estadoCam[n] = estadoCam[n] || {}).v = v;
+    }
+    function pasta(id, titulo, icone, contagem, ligada, parcial, aoMestre, filhos) {
+      var aberta = pastasAberta[id] !== false;      // padrão: aberta
+      var mestre = el('input', { type: 'checkbox', class: 'mq-sw', 'aria-label': 'Ligar ou desligar tudo em ' + titulo, title: 'Ligar/desligar tudo desta pasta' });
+      mestre.checked = ligada; mestre.indeterminate = parcial;
+      mestre.onchange = function () { aoMestre(mestre.checked); render(); };
+      mestre.onclick = function (e) { e.stopPropagation(); };
+      var cab = el('div', { class: 'mq-pasta-cab' }, [
+        el('span', { class: 'mq-seta', text: aberta ? '▼' : '▶' }),
+        el('span', { class: 'mq-pasta-ic', text: icone }),
+        el('span', { class: 'mq-pasta-nome', text: titulo }),
+        el('span', { class: 'mq-cont', text: contagem }),
+        mestre
+      ]);
+      cab.onclick = function () { pastasAberta[id] = !aberta; gravarLS(CH_PASTA, JSON.stringify(pastasAberta)); render(); };
+      var box = el('div', { class: 'mq-pasta' }, [cab]);
+      if (aberta) {
+        var c = el('div', { class: 'mq-pasta-corpo' });
+        if (filhos.length) filhos.forEach(function (x) { c.appendChild(x); });
+        else c.appendChild(el('div', { class: 'mq-peq', style: 'padding:4px 0 8px', text: 'Nada nesta pasta.' }));
+        box.appendChild(c);
+      }
+      return box;
+    }
+    function pastaDeCamadas(id, titulo, icone, lista) {
+      var ativos = lista.filter(function (l) { return l.getVisible(); }).length;
+      var cards = lista.map(function (l) {
+        var nome = nomeCamada(l);
+        return cartao(nome, iconeCamada(nome), l.getVisible(), l.getOpacity(),
+          function (v) { ligarCamada(l, v); salvarCam(); render(); },
+          function (o) { l.setOpacity(o); (estadoCam[nome] = estadoCam[nome] || {}).o = o; salvarCam(); });
+      });
+      return pasta(id, titulo, icone, ativos + '/' + lista.length, ativos > 0, ativos > 0 && ativos < lista.length,
+        function (v) { lista.forEach(function (l) { ligarCamada(l, v); }); salvarCam(); }, cards);
+    }
+
+    var mosaicos = ls.filter(ehMosaico), poligonos = ls.filter(function (l) { return !ehMosaico(l); });
+    corpo.appendChild(pastaDeCamadas('poligonos', 'Polígonos', '⬠', poligonos));
+    corpo.appendChild(pastaDeCamadas('mosaicos', 'Mosaicos', '🖼', mosaicos));
+
+    // pasta Marcações: cada marcação do usuário com seu próprio liga/desliga
+    var fsm = fonte.getFeatures(), camOn = camada.getVisible();
+    var visM = camOn ? fsm.filter(function (f) { return f.get('visible') !== false; }).length : 0;
+    var linhasM = fsm.slice().reverse().map(function (f) {
+      var cb = el('input', { type: 'checkbox', title: 'Mostrar/ocultar' });
+      cb.checked = camada.getVisible() && f.get('visible') !== false;
+      cb.onchange = function () {
+        if (cb.checked && !camada.getVisible()) camada.setVisible(true);
+        f.set('visible', cb.checked); render();
+      };
+      var nm = el('span', { class: 'mq-nome', text: f.get('name') || '(sem nome)', style: 'cursor:pointer' });
+      nm.onclick = function () { irPara(f); };
+      return el('div', { class: 'mq-lin' }, [
+        cb, el('span', { style: 'width:12px;height:12px;border-radius:50%;flex:none;box-shadow:0 0 0 1px #888;background:' + (f.get('color') || '#e53935') }),
+        el('label', { style: 'flex:1;min-width:0' }, [nm])
+      ]);
     });
-    corpo.appendChild(cartao('Minhas marcações', '✏️', camada.getVisible(), 1,
-      function (v) { camada.setVisible(v); }, null));
+    var ligadaM = fsm.length ? visM > 0 : camOn;
+    corpo.appendChild(pasta('marcacoes', 'Minhas marcações', '✏️', fsm.length ? visM + '/' + fsm.length : '0',
+      ligadaM, fsm.length > 0 && visM > 0 && visM < fsm.length,
+      function (v) { camada.setVisible(v); fsm.forEach(function (f) { f.set('visible', v); }); }, linhasM));
 
     var rest = el('button', { class: 'mq-btn', style: 'width:100%;margin-top:4px', text: '↺ Restaurar camadas ao padrão', onclick: function () {
       camadasListaveis().forEach(function (l) {

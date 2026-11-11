@@ -49,7 +49,7 @@ setTimeout(function () {
   varrer(map.getLayers().getArray());
 
   // faixa de informação no topo da tela
-  var html = '<b>Ponto da reclamação</b>: ' + lat + ', ' + lng;
+  var html = '<b>Coordenada</b>: ' + lat + ', ' + lng;
   if (props) {
     Object.keys(props).forEach(function (k) {
       if (k === 'geometry' || props[k] === null || props[k] === '') return;

@@ -97,6 +97,26 @@
         })
       }));
     }
+    // medidas na tela (botão 📏 de cada marcação): tamanho de cada lado + área (polígono) ou total (linha)
+    if (f.get('medidas') && (t === 'Polygon' || t === 'LineString') && res < 6) {
+      var cs = t === 'Polygon' ? g.getCoordinates()[0] : g.getCoordinates(), ob = { projection: 'EPSG:3857' };
+      var txtEstilo = function (geom, texto, dy) {
+        return new ol.style.Style({ geometry: geom, text: new ol.style.Text({
+          text: texto, font: 'bold 12px Arial, sans-serif', overflow: true, offsetY: dy,
+          fill: new ol.style.Fill({ color: '#000000' }), stroke: new ol.style.Stroke({ color: '#ffffff', width: 4 }) }) });
+      };
+      if (cs.length > 2) {                                   // linha de um só trecho: o total já diz tudo
+        for (var i = 0; i < cs.length - 1; i++) {
+          var a = cs[i], b = cs[i + 1];
+          if (Math.hypot(b[0] - a[0], b[1] - a[1]) / res < 42) continue;      // lado curto demais na tela: não polui
+          out.push(txtEstilo(new ol.geom.Point([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]),
+            fmtDist(ol.sphere.getLength(new ol.geom.LineString([a, b]), ob)), -11));
+        }
+      }
+      var total = '';
+      try { total = t === 'Polygon' ? 'Área: ' + fmtArea(ol.sphere.getArea(g, ob)) : 'Total: ' + fmtDist(ol.sphere.getLength(g, ob)); } catch (e) {}
+      if (total) out.push(txtEstilo(pontoRotulo(g), total, nome && res < 6 ? 16 : 0));
+    }
     return out;
   }
   var camada = new ol.layer.Vector({ source: fonte, style: estilo, zIndex: 9990 });
@@ -439,7 +459,12 @@
     }
     fs.slice().reverse().forEach(function (f) { corpo.appendChild(itemMarcacao(f)); });
 
+    var comMed = fs.filter(function (f) { var tp = f.getGeometry() && f.getGeometry().getType(); return tp === 'Polygon' || tp === 'LineString'; });
+    var todasMed = comMed.length > 0 && comMed.every(function (f) { return !!f.get('medidas'); });
     var rod = el('div', { class: 'mq-grade', style: 'margin-top:12px' }, [
+      comMed.length ? el('button', { class: 'mq-btn', text: todasMed ? '📏 Ocultar medidas' : '📏 Mostrar medidas',
+        title: 'Liga/desliga as medidas de todas as linhas e polígonos no mapa',
+        onclick: function () { comMed.forEach(function (f) { f.set('medidas', !todasMed); }); render(); } }) : null,
       el('button', { class: 'mq-btn', text: '⬇ GeoJSON', title: 'Exporta para o QGIS', onclick: function () { exportar('geojson'); } }),
       el('button', { class: 'mq-btn', text: '⬇ KML', title: 'Exporta para o Google Earth', onclick: function () { exportar('kml'); } }),
       el('button', { class: 'mq-btn', text: '⬆ Importar', onclick: function () { arquivoImport.click(); } }),
@@ -454,9 +479,16 @@
     var cb = el('input', { type: 'checkbox', title: 'Mostrar/ocultar' }); cb.checked = f.get('visible') !== false;
     cb.onchange = function () { f.set('visible', cb.checked); };
     var nomeEl = el('span', { class: 'mq-nome', text: f.get('name') || '(sem nome)', style: 'font-weight:bold' });
+    var tg = f.getGeometry() && f.getGeometry().getType(), medOn = !!f.get('medidas');
+    var btnMed = (tg === 'Polygon' || tg === 'LineString') ? el('button', {
+      class: 'mq-ic', title: medOn ? 'Ocultar medidas no mapa' : 'Mostrar medidas no mapa', text: '📏',
+      style: medOn ? 'background:#dbe8fb;box-shadow:0 0 0 2px #1565c0;border-radius:8px' : 'opacity:.45',
+      onclick: function () { f.set('medidas', !medOn); render(); }
+    }) : null;
     var topo = el('div', { class: 'mq-topo' }, [
       cb, el('span', { style: 'width:14px;height:14px;border-radius:50%;flex:none;box-shadow:0 0 0 1px #888;background:' + cor }),
       el('label', { style: 'flex:1;min-width:0;cursor:pointer' }, [nomeEl]),
+      btnMed,
       el('button', { class: 'mq-ic', title: 'Ir para', text: '🎯', onclick: function () { irPara(f); } }),
       el('button', { class: 'mq-ic', title: 'Editar', text: aberto ? '▾' : '✏️', onclick: function () { expandido = aberto ? null : id; selecionar(aberto ? null : f); render(); } })
     ]);
@@ -676,5 +708,19 @@
     var item = corpo.querySelector('.mq-item.sel'); if (item && item.scrollIntoView) item.scrollIntoView({ block: 'nearest' });
   });
   // alguns navegadores móveis dispararam o balão da quadra antes: garante que ele não reapareça por cima da seleção
-  window.MQ = { fonte: fonte, camada: camada, abrir: abrir, exportar: exportar };
+  // usado pela medição (05-medicao.js) para guardar o polígono/linha medido em "Minhas marcações"
+  function adicionarMarcacao(geom, props, editar) {
+    var f = new ol.Feature(geom);
+    f.setId(novoId());
+    var p = { name: '', description: '', color: lerLS(CH_COR) || CORES[0], visible: true, created: new Date().toISOString() };
+    if (props) Object.keys(props).forEach(function (k) { p[k] = props[k]; });
+    f.setProperties(p);
+    fonte.addFeature(f);
+    if (editar) {                                    // abre já em edição para dar o nome
+      expandido = f.getId(); selecionar(f); abrir('marc');
+      var alvo = corpo.querySelector('.mq-item.sel input[type=text]'); if (alvo) { alvo.focus(); alvo.select(); }
+    } else render();
+    return f;
+  }
+  window.MQ = { fonte: fonte, camada: camada, abrir: abrir, exportar: exportar, adicionar: adicionarMarcacao, atualizar: render };
 })();

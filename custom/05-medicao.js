@@ -69,7 +69,9 @@
         })
       }));
     }
-    // medida de cada trecho (só quando há espaço na tela)
+    // medida de cada trecho, paralela à direção do lado (só quando há espaço na tela)
+    var rv0 = 0;
+    try { rv0 = map.getView().getRotation() || 0; } catch (e) {}
     for (var j = 0; j < cs.length - 1; j++) {
       var a = cs[j], b = cs[j + 1];
       var compPx = Math.sqrt(Math.pow(b[0] - a[0], 2) + Math.pow(b[1] - a[1], 2)) / resolucao;
@@ -77,14 +79,22 @@
       var larg = txtL.length * 7 + 8;                    // largura aproximada do texto em 12px
       if (compPx < Math.max(24, larg * 0.5)) continue;   // só esconde quando realmente não há espaço
       var peq = compPx < larg;                           // lado curto: texto menor em vez de sumir
+      var rot = -Math.atan2(b[1] - a[1], b[0] - a[0]);   // texto na direção do lado, sempre de pé na tela
+      while (rot + rv0 > Math.PI / 2) rot -= Math.PI;
+      while (rot + rv0 < -Math.PI / 2) rot += Math.PI;
+      var mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], dy = peq ? -10 : -12;
+      if (t === 'Polygon') {                             // polígono: coloca o texto do lado de fora
+        var dir = -rot, upx = -Math.sin(dir), upy = Math.cos(dir);
+        if (g.intersectsCoordinate([mid[0] + upx * 7 * resolucao, mid[1] + upy * 7 * resolucao])) dy = -dy;
+      }
       out.push(new ol.style.Style({
-        geometry: new ol.geom.Point([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]),
+        geometry: new ol.geom.Point(mid),
         text: new ol.style.Text({
           text: txtL,
           font: 'bold ' + (peq ? 10 : 12) + 'px sans-serif',
           fill: new ol.style.Fill({ color: '#000' }),
           stroke: new ol.style.Stroke({ color: '#fff', width: 4 }),
-          offsetY: peq ? -10 : -12
+          offsetY: dy, rotation: rot, rotateWithView: true
         })
       }));
     }
@@ -273,14 +283,24 @@
   function aviso(t) { if (typeof avisarBusca === 'function') avisarBusca(t); }
   function rotuloBtn(t) { if (btnShare) btnShare.textContent = t || ROTULO_BTN; }
 
+  var cacheImg = {}, cacheOrdem = [], falhouEm = {};                // tiles já baixados nesta sessão: mudar zoom/título não baixa de novo
   function carregarImg(url, cors) {
+    if (cacheImg[url]) return cacheImg[url];
+    if (falhouEm[url] && Date.now() - falhouEm[url] < 300000) return Promise.resolve(null);   // falhou há pouco: não espera de novo
+    var p = carregarImgNovo(url, cors);
+    cacheImg[url] = p; cacheOrdem.push(url);
+    if (cacheOrdem.length > 160) delete cacheImg[cacheOrdem.shift()];
+    p.then(function (im) { if (!im) { delete cacheImg[url]; falhouEm[url] = Date.now(); } });
+    return p;
+  }
+  function carregarImgNovo(url, cors) {
     return new Promise(function (resolve) {
       var im = new Image(), fim = false;
       function acabou(v) { if (!fim) { fim = true; resolve(v); } }
       if (cors) im.crossOrigin = 'anonymous';   // se o servidor não permitir, falha limpo em vez de "sujar" a imagem
       im.onload = function () { acabou(im); };
       im.onerror = function () { acabou(null); };
-      setTimeout(function () { acabou(null); }, 15000);
+      setTimeout(function () { acabou(null); }, 9000);
       im.src = url;
     });
   }
@@ -416,13 +436,13 @@
   // >>> ruas-osm
   // Nomes de rua desenhados pelo próprio script (dados do OpenStreetMap): letra grande, sempre dentro da imagem,
   // acompanhando a direção da rua. Os tiles de rótulo do Google só entram se o OSM não responder.
-  var osmCache = [];
+  var osmCache = [], osmFalhaEm = 0;
   function mundo20Inv(x, y) {                           // pixel do mundo (zoom 20) -> [lon, lat]
     var N = 256 * Math.pow(2, 20), n = Math.PI - 2 * Math.PI * y / N;
     return [x / N * 360 - 180, 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)))];
   }
   function pedirOverpass(url, q) {
-    var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, 9000);
+    var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, 6000);
     return fetch(url + '?data=' + encodeURIComponent(q), { signal: ctl.signal })
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(function (j) { clearTimeout(t); return j; }, function (e) { clearTimeout(t); throw e; });
@@ -436,7 +456,8 @@
       });
     });
   }
-  async function buscarRuasOSM(bx0, bx1, by0, by1) {
+  async function buscarRuasOSM(bx0, bx1, by0, by1, fz) {
+    if (Date.now() - osmFalhaEm < 90000) return null;                      // falhou há pouco: nem tenta (usa o Google)
     try {
       var a = mundo20Inv(bx0, by1), b = mundo20Inv(bx1, by0);
       var w = a[0], s = a[1], e = b[0], n = b[1];
@@ -445,18 +466,22 @@
         var c = osmCache[i];
         if (c.w <= w && c.s <= s && c.e >= e && c.n >= n) return c.ruas;
       }
-      var mx = (e - w) * 0.35, my = (n - s) * 0.35;                        // busca com folga para absorver ajustes de zoom
+      // região larga (cobre o zoom máximo do controle): uma única consulta serve a todos os ajustes de zoom
+      var amp = Math.max(0.35, 2.4 / (fz || 1) - 0.5);
+      var mx = (e - w) * amp, my = (n - s) * amp;
+      if ((e - w) + 2 * mx > 0.06) mx = (0.06 - (e - w)) / 2;
+      if ((n - s) + 2 * my > 0.06) my = (0.06 - (n - s)) / 2;
       var W2 = w - mx, S2 = s - my, E2 = e + mx, N2 = n + my;
       var q = '[out:json][timeout:12];way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|pedestrian|service)$"]["name"](' +
         [S2, W2, N2, E2].map(function (x) { return x.toFixed(6); }).join(',') + ');out geom;';
       var json = await primeiroSucesso(['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']
         .map(function (u) { return pedirOverpass(u, q); }));
-      if (!json || !json.elements) return null;
+      if (!json || !json.elements) { osmFalhaEm = Date.now(); return null; }
       var ruas = json.elements.filter(function (el) { return el.geometry && el.geometry.length > 1 && el.tags && el.tags.name; })
         .map(function (el) { return { nome: el.tags.name, pts: el.geometry.map(function (g) { return [g.lon, g.lat]; }) }; });
       osmCache.push({ w: W2, s: S2, e: E2, n: N2, ruas: ruas });
       return ruas;
-    } catch (err) { console.warn('Ruas (OpenStreetMap):', err); return null; }
+    } catch (err) { console.warn('Ruas (OpenStreetMap):', err); osmFalhaEm = Date.now(); return null; }
   }
   function abreviarRua(n) {
     var t = String(n).trim();
@@ -622,7 +647,7 @@
     var by0 = Math.min.apply(null, cantos.map(function (c) { return c[1]; })), by1 = Math.max.apply(null, cantos.map(function (c) { return c[1]; }));
 
     var rosaP = carregarImg(window.ROSA_SVG_URL, false);
-    var osmP = loc ? buscarRuasOSM(bx0, bx1, by0, by1) : Promise.resolve(null);   // nomes de rua (só na imagem de localização)
+    var osmP = loc ? buscarRuasOSM(bx0, bx1, by0, by1, fz) : Promise.resolve(null);   // nomes de rua (só na imagem de localização)
     var fontes = fontesDeImagem(opc);
     var camadas = [];
     for (var bi = 0; bi < fontes.bases.length; bi++) {          // Google primeiro; se não carregar nada, cai para a Esri
@@ -865,10 +890,11 @@
     });
   }
 
-  function chaveAtual() {
-    return modo + '|' + (map.getView().getRotation() || 0).toFixed(4) + '|' +
-      pts.map(function (p) { return p[0].toFixed(2) + ',' + p[1].toFixed(2); }).join(';');
+  function chaveDe(ps, md) {
+    return md + '|' + (map.getView().getRotation() || 0).toFixed(4) + '|' +
+      ps.map(function (p) { return p[0].toFixed(2) + ',' + p[1].toFixed(2); }).join(';');
   }
+  function chaveAtual() { return chaveDe(pts, modo); }
 
   function baixar(blob, nome) {
     var a = document.createElement('a');
@@ -992,7 +1018,7 @@
   // imagens: [{ blob, arquivo, rotulo }, ...]   kml: { gerar(titulo) -> { blob, arquivo } }
   // opc: { passo, titulo, regerar(passo, titulo) -> Promise<imagens>, salvar(titulo) -> bool }
   function mostrarPrevia(imagens, texto, kml, opc) {
-    var urls = [], arquivos = [], atual = 0, token = 0, nAbas = imagens.length;
+    var urls = [], arquivos = [], atual = 0, token = 0, nAbas = imagens.length, pendentes = {};
     var passoAtual = opc.passo, tituloAtual = opc.titulo || '';
     function titulo() { return tituloAtual.trim(); }
     function textoFinal() { return (titulo() ? titulo() + '\n' : '') + texto; }
@@ -1020,7 +1046,9 @@
     var botoesAba = [];
     function escolherAba(n) {
       if (!imagens[n]) return;
-      atual = n; img.src = urls[n]; msg.textContent = '';
+      atual = n; img.src = urls[n];
+      img.style.opacity = pendentes[n] ? '.45' : '1';
+      if (!pendentes[0] && !pendentes[1]) msg.textContent = '';
       botoesAba.forEach(function (b, i) {
         b.style.background = i === n ? '#e91e63' : '#eee';
         b.style.color = i === n ? '#fff' : '#222';
@@ -1054,18 +1082,27 @@
       tUpd = setTimeout(async function () {
         var meu = ++token;
         msg.textContent = 'Atualizando…';
+        pendentes = {}; for (var pi = 0; pi < nAbas; pi++) pendentes[pi] = true;
         img.style.opacity = '.45';
         try {
-          var lista = await opc.regerar(passoAtual, titulo());
+          var lista = await opc.regerar(passoAtual, titulo(), function (i, item) {   // cada imagem aparece assim que fica pronta
+            if (meu !== token || i >= nAbas) return;
+            URL.revokeObjectURL(urls[i]);
+            imagens[i] = item;
+            urls[i] = URL.createObjectURL(item.blob);
+            arquivos[i] = new File([item.blob], item.arquivo, { type: 'image/png' });
+            delete pendentes[i];
+            if (i === atual) { img.src = urls[i]; img.style.opacity = '1'; }
+          });
           if (meu !== token) return;                       // chegou um pedido mais novo
-          carregar(lista);
-          img.src = urls[atual];
+          pendentes = {};
+          if (lista.length !== imagens.length) { carregar(lista); img.src = urls[atual]; }
           msg.textContent = '';
         } catch (e) {
           console.warn('Atualização da imagem:', e);
           if (meu === token) msg.textContent = 'Não foi possível atualizar a imagem.';
         } finally {
-          if (meu === token) img.style.opacity = '1';
+          if (meu === token) { img.style.opacity = '1'; pendentes = {}; }
         }
       }, atraso);
     }
@@ -1159,7 +1196,7 @@
     botao('🖨️ Imprimir', '#6d4c41', function () {
       imprimir(chkDuas && chkDuas.checked ? imagens : [imagens[atual]]);
     });
-    botao('📌 Salvar em marcações', '#8e24aa', function () {
+    if (opc.salvar) botao('📌 Salvar em marcações', '#8e24aa', function () {
       if (opc.salvar(titulo())) msg.textContent = 'Salvo em Minhas marcações.';
     });
     botao('🌍 Exportar KML', '#43a047', async function () {
@@ -1182,45 +1219,63 @@
   var zoomPasso = 0;                                   // lembrado entre aberturas: -10 (afastar) … +10 (aproximar)
   function fatorZoom(v) { return Math.pow(1.15, -v); }
 
-  async function compartilhar() {
+  function compartilhar() {
     if (gerando) return;
     if (!textoCopia) {
       aviso(modo === 'dist' ? 'Marque ao menos 2 pontos para compartilhar.' : 'Marque ao menos 3 pontos para compartilhar.');
       return;
     }
+    return compartilharDe(pts.slice(), modo, textoCopia, tituloImg, true);
+  }
+  // daMedicao = true: medição em andamento (título e "salvar em marcações" valem para ela)
+  // daMedicao = false: geometria de uma marcação já salva (Minhas marcações > Imprimir)
+  async function compartilharDe(ptsC, modoC, textoBase, tituloIni, daMedicao) {
+    if (gerando) return;
     if (location.protocol === 'file:') {
       aviso('Para gerar a imagem, abra o mapa por um servidor (http://localhost:8000) ou pelo site publicado, não direto pelo arquivo.');
       return;
     }
-    var base = chaveAtual(), texto = textoCopia, ptsC = pts.slice(), modoC = modo;
+    var base = chaveDe(ptsC, modoC), texto = textoBase;
     var cc = (modoC === 'area') ? centroideLatLon(ptsC) : null;
     if (cc) texto += '\nCentro: ' + fmtCentro(cc) + '\nhttps://www.google.com/maps?q=' + fmtCentroPonto(cc).replace(' ', '');
     var aneis = (modoC === 'area') ? aneisDaQuadra(ptsC) : null;     // null = fora das quadras mapeadas (sem 2ª imagem)
 
-    async function obter(passo, tit) {                               // gera (ou reaproveita) as imagens para este zoom/título
-      var chave = base + '|z' + passo + '|t' + tit;
-      if (imgCache && imgCache.chave === chave) return imgCache;
-      var fz = fatorZoom(passo);
-      var tarefas = [montarImagem(ptsC.slice(), modoC, { zoom: fz, titulo: tit })];
-      if (aneis) {                                                   // 2ª imagem: a área dentro do enquadramento da quadra
-        tarefas.push(montarImagem(ptsC.slice(), modoC, { localizacao: true, enquadrar: aneis[0], contorno: aneis, zoom: fz, titulo: tit })
-          .catch(function (e) { console.warn('Imagem de localização:', e); return null; }));
-      }
-      var r = await Promise.all(tarefas);
-      imgCache = { chave: chave, blob: r[0], blob2: r[1] || null };
-      return imgCache;
+    var memo = {}, memoOrdem = [];                                   // imagens já geradas (voltar a um zoom/título é instantâneo)
+    function lembrar(chave, mk) {
+      if (memo[chave]) return memo[chave];
+      var p = memo[chave] = mk();
+      memoOrdem.push(chave);
+      if (memoOrdem.length > 12) delete memo[memoOrdem.shift()];
+      p.catch(function () { delete memo[chave]; });
+      return p;
     }
-    function lista(c) {
-      var l = [{ blob: c.blob, arquivo: 'medicao-quadra.png', rotulo: '📏 Medidas' }];
-      if (c.blob2) l.push({ blob: c.blob2, arquivo: 'localizacao-quadra.png', rotulo: '📍 Localização na quadra' });
+    function gerarMed(passo, tit) {
+      return lembrar('m|' + passo + '|' + tit, function () { return montarImagem(ptsC.slice(), modoC, { zoom: fatorZoom(passo), titulo: tit }); });
+    }
+    function gerarLoc(passo, tit) {                                  // 2ª imagem: a área dentro do enquadramento da quadra
+      if (!aneis) return Promise.resolve(null);
+      return lembrar('l|' + passo + '|' + tit, function () {
+        return montarImagem(ptsC.slice(), modoC, { localizacao: true, enquadrar: aneis[0], contorno: aneis, zoom: fatorZoom(passo), titulo: tit })
+          .catch(function (e) { console.warn('Imagem de localização:', e); return null; });
+      });
+    }
+    function item0(b) { return { blob: b, arquivo: 'medicao-quadra.png', rotulo: '📏 Medidas' }; }
+    function item1(b) { return { blob: b, arquivo: 'localizacao-quadra.png', rotulo: '📍 Localização na quadra' }; }
+    async function obterTudo(passo, tit, aoImagem) {                 // aoImagem(indice, item): chamado assim que cada uma fica pronta
+      var pm = gerarMed(passo, tit).then(function (b) { if (aoImagem) aoImagem(0, item0(b)); return b; });
+      var pl = gerarLoc(passo, tit).then(function (b) { if (b && aoImagem) aoImagem(1, item1(b)); return b; });
+      var r = await Promise.all([pm, pl]);
+      var l = [item0(r[0])];
+      if (r[1]) l.push(item1(r[1]));
       return l;
     }
 
-    var c, t0 = tituloImg.trim();
+    var lst, t0 = String(tituloIni || '').trim();
     gerando = true;
     rotuloBtn('Gerando imagem…');
+    if (!daMedicao) aviso('Gerando as imagens…');
     try {
-      c = await obter(zoomPasso, t0);
+      lst = await obterTudo(zoomPasso, t0);
     } catch (e) {
       console.error('Imagem da medição:', e);
       aviso('Não foi possível gerar a imagem.');
@@ -1237,14 +1292,24 @@
         return { blob: new Blob([txt], { type: 'application/vnd.google-earth.kml+xml' }), arquivo: nomeArq + '.kml' };
       }
     };
-    mostrarPrevia(lista(c), texto, kml, {
+    mostrarPrevia(lst, texto, kml, {
       passo: zoomPasso,
       titulo: t0,
-      regerar: async function (passo, tit) { zoomPasso = passo; tituloImg = tit; return lista(await obter(passo, tit)); },
-      salvar: function (tit) { tituloImg = tit; return salvarMarcacao(ptsC, modoC, tit, false); }
+      regerar: async function (passo, tit, aoImagem) { zoomPasso = passo; if (daMedicao) tituloImg = tit; return obterTudo(passo, tit, aoImagem); },
+      salvar: daMedicao ? function (tit) { tituloImg = tit; return salvarMarcacao(ptsC, modoC, tit, false); } : null   // marcação já salva: sem botão de salvar
     });
   }
   btnShare.onclick = compartilhar;
+
+  // usado por Minhas marcações (15-camadas-marcacoes.js): abre a mesma janela de imagens, zoom, título e impressão
+  window.MED = {
+    abrir: function (ps, md, titulo) {
+      if (md === 'area' ? ps.length < 3 : ps.length < 2) { aviso('Esta marcação não tem pontos suficientes.'); return; }
+      var t = textoMedicao(ps, md), k = t.indexOf(' | Centro');
+      if (k >= 0) t = t.slice(0, k);                      // o Centro é acrescentado dentro de compartilharDe, como na medição
+      return compartilharDe(ps, md, t, titulo || '', false);
+    }
+  };
 
   // exporta o KML direto do painel, sem precisar gerar as imagens
   async function exportarKml() {

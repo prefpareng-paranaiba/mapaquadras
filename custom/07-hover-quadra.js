@@ -19,12 +19,27 @@
   var atual = null;
 
   var pendente = false, pixelUlt = null;
+  // forEachFeatureAtPixel desenha todas as quadras num canvas do tamanho da tela e lê os pixels (getImageData) a cada vez que o mapa
+  // se move: é o aviso "Multiple readback operations" do console e o maior peso do hover. Aqui é só geometria: a quadra cujo
+  // contorno está a até 5 px do mouse (índice espacial, sem canvas). Mesmo resultado do contorno de antes, sem o custo.
+  function quadraPerto(pixel) {
+    var coord = map.getCoordinateFromPixel(pixel);
+    if (!coord) return null;
+    var tol = 5 * (map.getView().getResolution() || 1), dMin = tol, melhor = null;
+    var ext = [coord[0] - tol, coord[1] - tol, coord[0] + tol, coord[1] + tol];
+    quadras.forEach(function (l) {
+      if (!l.getVisible() || l.getOpacity() <= 0 || l.get('interactive') === false) return;
+      l.getSource().forEachFeatureIntersectingExtent(ext, function (f) {
+        var g = f.getGeometry(); if (!g) return;
+        var c = g.getClosestPoint(coord), d = Math.hypot(c[0] - coord[0], c[1] - coord[1]);
+        if (d <= dMin) { dMin = d; melhor = f; }
+      });
+    });
+    return melhor;
+  }
   function procurarHover() {
     pendente = false;
-    var achou = null;
-    map.forEachFeatureAtPixel(pixelUlt, function (f) { achou = f; return true; }, {
-      layerFilter: function (l) { return quadras.indexOf(l) >= 0 && l.get('interactive') !== false; }
-    });
+    var achou = quadraPerto(pixelUlt);
     if (achou === atual) return;
     fonteHover.clear();
     atual = achou;

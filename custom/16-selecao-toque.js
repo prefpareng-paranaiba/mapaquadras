@@ -108,7 +108,9 @@
   var dedos = {}, cancelado = false, ini = null;
   vp.addEventListener('pointerdown', function (e) {
     if (e.pointerType === 'mouse') return;
-    dedos[e.pointerId] = true;
+    var agora = Date.now();
+    for (var id in dedos) { if (agora - dedos[id] > 4000) delete dedos[id]; }   // pointerup perdido não pode deixar o toque travado
+    dedos[e.pointerId] = agora;
     if (Object.keys(dedos).length > 1) { cancelado = true; ini = null; return; }   // dois dedos = zoom/giro
     cancelado = false;
     ini = { id: e.pointerId, x: e.clientX, y: e.clientY, t: Date.now() };

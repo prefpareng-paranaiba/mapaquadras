@@ -11,7 +11,8 @@
   var CH_CAM = 'mq.camadas.v1';
   var CH_COR = 'mq.cor.v1';
   var CH_PASTA = 'mq.pastas.v1';
-  var CORES = ['#e53935', '#fb8c00', '#fdd835', '#43a047', '#00acc1', '#1e88e5', '#8e24aa', '#ffffff'];
+  var CORES = ['#e53935', '#d81b60', '#fb8c00', '#f4511e', '#fdd835', '#c0ca33', '#43a047', '#00897b',
+    '#00acc1', '#1e88e5', '#3949ab', '#8e24aa', '#6d4c41', '#757575', '#000000', '#ffffff'];
   var MAX_IMPORT_AVISO = 2000;
 
   // ---------- armazenamento (tudo em try/catch: modo privado, cache limpo, espaço cheio) ----------
@@ -37,13 +38,15 @@
     return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
   }
   function novoId() { return 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+  // formatação padronizada (2 casas decimais), igual à do 05-medicao.js
   function fmtDist(m) {
-    return m < 1000 ? m.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' m'
-      : (m / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 3 }) + ' km';
+    return m < 1000
+      ? m.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' m'
+      : (m / 1000).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 }) + ' km';
   }
   function fmtArea(m2) {
-    var s = m2.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' m²';
-    if (m2 >= 10000) s += ' (' + (m2 / 10000).toLocaleString('pt-BR', { maximumFractionDigits: 3 }) + ' ha)';
+    var s = m2.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' m²';
+    if (m2 >= 10000) s += ' (' + (m2 / 10000).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' ha)';
     return s;
   }
   var toastEl = null, toastT = null;
@@ -60,6 +63,7 @@
   // ---------- camada das marcações ----------
   var fonte = new ol.source.Vector();
   var selecionada = null;
+  var editando = null, apagandoPt = false;     // marcação cujos pontos estão sendo editados / modo "apagar ponto"
   var fmtJson = new ol.format.GeoJSON();
 
   function pontoRotulo(g) {
@@ -68,6 +72,14 @@
     if (t === 'Polygon') return g.getInteriorPoint();
     if (t === 'LineString') return new ol.geom.Point(g.getCoordinateAt(0.5));
     return new ol.geom.Point(ol.extent.getCenter(g.getExtent()));
+  }
+  // texto paralelo ao lado (sempre de pé na tela). Devolve { rot, dir } onde dir = direção de leitura no mapa
+  function rotacaoLado(a, b) {
+    var ang = Math.atan2(b[1] - a[1], b[0] - a[0]), rot = -ang, r = 0;
+    try { r = map.getView().getRotation() || 0; } catch (e) {}
+    while (rot + r > Math.PI / 2) rot -= Math.PI;
+    while (rot + r < -Math.PI / 2) rot += Math.PI;
+    return { rot: rot, dir: -rot };
   }
   function estilo(f, res) {
     if (f.get('visible') === false) return null;
@@ -100,22 +112,39 @@
     // medidas na tela (botão 📏 de cada marcação): tamanho de cada lado + área (polígono) ou total (linha)
     if (f.get('medidas') && (t === 'Polygon' || t === 'LineString') && res < 6) {
       var cs = t === 'Polygon' ? g.getCoordinates()[0] : g.getCoordinates(), ob = { projection: 'EPSG:3857' };
-      var txtEstilo = function (geom, texto, dy) {
+      var txtEstilo = function (geom, texto, dy, rot) {
         return new ol.style.Style({ geometry: geom, text: new ol.style.Text({
           text: texto, font: 'bold 12px Arial, sans-serif', overflow: true, offsetY: dy,
+          rotation: rot || 0, rotateWithView: rot !== undefined,
           fill: new ol.style.Fill({ color: '#000000' }), stroke: new ol.style.Stroke({ color: '#ffffff', width: 4 }) }) });
       };
       if (cs.length > 2) {                                   // linha de um só trecho: o total já diz tudo
         for (var i = 0; i < cs.length - 1; i++) {
           var a = cs[i], b = cs[i + 1];
           if (Math.hypot(b[0] - a[0], b[1] - a[1]) / res < 42) continue;      // lado curto demais na tela: não polui
-          out.push(txtEstilo(new ol.geom.Point([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]),
-            fmtDist(ol.sphere.getLength(new ol.geom.LineString([a, b]), ob)), -11));
+          var mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], rl = rotacaoLado(a, b), dy = -11;
+          if (t === 'Polygon') {                                               // polígono: texto do lado de fora
+            var up = [Math.sin(rl.dir) * -1, Math.cos(rl.dir)];                // "para cima" do texto, no mapa
+            if (g.intersectsCoordinate([mid[0] + up[0] * 6 * res, mid[1] + up[1] * 6 * res])) dy = 11;
+          }
+          out.push(txtEstilo(new ol.geom.Point(mid), fmtDist(ol.sphere.getLength(new ol.geom.LineString([a, b]), ob)), dy, rl.rot));
         }
       }
       var total = '';
       try { total = t === 'Polygon' ? 'Área: ' + fmtArea(ol.sphere.getArea(g, ob)) : 'Total: ' + fmtDist(ol.sphere.getLength(g, ob)); } catch (e) {}
       if (total) out.push(txtEstilo(pontoRotulo(g), total, nome && res < 6 ? 16 : 0));
+    }
+    // edição de pontos: mostra todos os vértices (vermelhos e maiores no modo "apagar ponto")
+    if (f === editando && (t === 'Polygon' || t === 'LineString')) {
+      var vs = t === 'Polygon' ? g.getCoordinates()[0].slice(0, -1) : g.getCoordinates();
+      vs.forEach(function (c, idx) {
+        out.push(new ol.style.Style({
+          geometry: new ol.geom.Point(c), zIndex: 100,
+          image: new ol.style.Circle({
+            radius: apagandoPt ? 10 : 7, fill: new ol.style.Fill({ color: '#ffffff' }),
+            stroke: new ol.style.Stroke({ color: apagandoPt ? '#e53935' : '#1565c0', width: 3 }) })
+        }));
+      });
     }
     return out;
   }
@@ -510,14 +539,35 @@
       b.onclick = function () { f.set('color', c); gravarLS(CH_COR, c); render(); };
       cores.appendChild(b);
     });
+    var atual = f.get('color') || '', fora = CORES.indexOf(atual) < 0;      // cor personalizada
+    var pick = el('input', { type: 'color', title: 'Outra cor…', 'aria-label': 'Escolher outra cor',
+      style: 'width:32px;height:32px;padding:0;border:0;border-radius:50%;cursor:pointer;background:none;' + (fora ? 'box-shadow:0 0 0 3px #1565c0' : 'box-shadow:0 0 0 1px #999') });
+    pick.value = /^#[0-9a-f]{6}$/i.test(atual) ? atual : '#e53935';
+    pick.onchange = function () { f.set('color', pick.value); gravarLS(CH_COR, pick.value); render(); };
+    cores.appendChild(pick);
     var acoes = el('div', { class: 'mq-grade' }, [
       el('button', { class: 'mq-btn pri', text: '✔ Pronto', onclick: function () { expandido = null; selecionar(null); render(); } }),
-      el('button', { class: 'mq-btn', text: '✥ Editar forma', onclick: function () { iniciarEdicaoForma(f); } }),
+      el('button', { class: 'mq-btn', text: '✥ Editar pontos', title: 'Mover, adicionar ou apagar pontos', onclick: function () { iniciarEdicaoForma(f); } }),
+      (function () {
+        var tp = f.getGeometry() && f.getGeometry().getType();
+        if (tp !== 'Polygon' && tp !== 'LineString') return null;
+        return el('button', { class: 'mq-btn', text: '🖨 Imprimir', title: 'Imagem com medidas, localização na quadra e impressão', onclick: function () { imprimirMarcacao(f); } });
+      })(),
       el('button', { class: 'mq-btn per', text: '🗑 Excluir', onclick: function () { if (confirm('Excluir "' + (f.get('name') || 'esta marcação') + '"?')) { fonte.removeFeature(f); expandido = null; selecionar(null); render(); } } })
     ]);
     return el('div', { style: 'margin:6px 0 0 0' }, [nome, desc, cores, acoes]);
   }
   function selecionar(f) { selecionada = f; camada.changed(); }
+  // abre a janela de imagens/impressão do 05-medicao.js para a marcação selecionada
+  function imprimirMarcacao(f) {
+    var g = f.getGeometry(); if (!g) return;
+    var t = g.getType(), ps, md;
+    if (t === 'Polygon') { ps = g.getCoordinates()[0].slice(0, -1); md = 'area'; }
+    else if (t === 'LineString') { ps = g.getCoordinates(); md = 'dist'; }
+    else { aviso('Só é possível imprimir linhas e polígonos.'); return; }
+    if (!window.MED || !window.MED.abrir) { aviso('O módulo de medição (05-medicao.js) não está carregado.'); return; }
+    window.MED.abrir(ps.map(function (c) { return [c[0], c[1]]; }), md, f.get('name') || '');
+  }
   function irPara(f) {
     var g = f.getGeometry(); if (!g) return;
     var v = map.getView(), mob = window.innerWidth <= 640;
@@ -664,20 +714,111 @@
     if (draw) { map.removeInteraction(draw); draw = null; }
     sairModo();
   }
+  // ---- edição de pontos: mover, adicionar (arrastar o meio de um lado) e apagar ----
+  var snapshots = [], geomOriginal = null, mudou = false;
+  function coordsDe(g) { return JSON.parse(JSON.stringify(g.getCoordinates())); }
+  function guardarSnapshot(f) { var g = f.getGeometry(); if (g) { snapshots.push(coordsDe(g)); if (snapshots.length > 50) snapshots.shift(); } }
+  function fmt2(n, mx) { return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: mx }); }
+  function txtDist2(m) { return m < 1000 ? fmt2(m, 2) + ' m' : fmt2(m / 1000, 3) + ' km'; }
+  function txtArea2(m2) { var s = fmt2(m2, 2) + ' m²'; if (m2 >= 10000) s += ' (' + fmt2(m2 / 10000, 4) + ' ha)'; return s; }
+  function centroLatLon(ring) {                       // centróide do polígono (ring sem repetir o 1º ponto) -> [lat, lon]
+    var n = ring.length, ox = ring[0][0], oy = ring[0][1], A = 0, cx = 0, cy = 0, i;
+    for (i = 0; i < n; i++) {
+      var x0 = ring[i][0] - ox, y0 = ring[i][1] - oy, x1 = ring[(i + 1) % n][0] - ox, y1 = ring[(i + 1) % n][1] - oy, c = x0 * y1 - x1 * y0;
+      A += c; cx += (x0 + x1) * c; cy += (y0 + y1) * c;
+    }
+    var m = Math.abs(A) < 1e-9 ? ring[0] : [ox + cx / (3 * A), oy + cy / (3 * A)], ll = ol.proj.toLonLat(m);
+    return ll[1].toFixed(6) + ', ' + ll[0].toFixed(6);
+  }
+  // depois de editar os pontos, atualiza nome/descrição que foram gerados automaticamente pela medição
+  function atualizarTextosMedidos(f) {
+    var g = f.getGeometry(); if (!g) return;
+    var t = g.getType(), ob = { projection: 'EPSG:3857' }, nome = f.get('name') || '', desc = f.get('description') || '';
+    var rotulo, novaDesc;
+    try {
+      if (t === 'Polygon') {
+        var ring = g.getCoordinates()[0], area = ol.sphere.getArea(g, ob), per = ol.sphere.getLength(new ol.geom.LineString(ring), ob);
+        rotulo = 'Área ' + txtArea2(area);
+        novaDesc = 'Área: ' + txtArea2(area) + ' | Perímetro: ' + txtDist2(per) + ' | Centro: ' + centroLatLon(ring.slice(0, -1));
+      } else if (t === 'LineString') {
+        var d = ol.sphere.getLength(g, ob);
+        rotulo = 'Distância ' + txtDist2(d); novaDesc = 'Distância: ' + txtDist2(d);
+      } else return;
+    } catch (e) { return; }
+    if (/^(Área|Distância) [\d.,]+ (m²|m|km)/.test(nome)) f.set('name', nome.replace(/^(Área|Distância) .*?(?= · |$)/, rotulo));
+    if (/^(Área|Distância):/.test(desc)) {
+      var q = /\| Quadra (.+)$/.exec(desc);
+      f.set('description', novaDesc + (q ? ' | Quadra ' + q[1] : ''));
+    }
+  }
+  function apagarVertice(f, idx) {
+    var g = f.getGeometry(), t = g.getType();
+    if (t === 'Polygon') {
+      var pts = g.getCoordinates()[0].slice(0, -1);
+      if (pts.length <= 3) { aviso('Um polígono precisa de pelo menos 3 pontos.'); return false; }
+      guardarSnapshot(f); pts.splice(idx, 1); g.setCoordinates([pts.concat([pts[0]])]);
+    } else if (t === 'LineString') {
+      var ls = g.getCoordinates();
+      if (ls.length <= 2) { aviso('Uma linha precisa de pelo menos 2 pontos.'); return false; }
+      guardarSnapshot(f); ls.splice(idx, 1); g.setCoordinates(ls);
+    } else return false;
+    mudou = true; return true;
+  }
+  function verticeMaisPerto(f, pixel) {
+    var g = f.getGeometry(), t = g.getType(), cs = t === 'Polygon' ? g.getCoordinates()[0].slice(0, -1) : g.getCoordinates();
+    var melhor = -1, dmin = 24;
+    cs.forEach(function (c, i) {
+      var p = map.getPixelFromCoordinate(c); if (!p) return;
+      var d = Math.hypot(p[0] - pixel[0], p[1] - pixel[1]);
+      if (d < dmin) { dmin = d; melhor = i; }
+    });
+    return melhor;
+  }
+  function barraEdicao(f) {
+    var t = f.getGeometry().getType(), podeApagar = t === 'Polygon' || t === 'LineString', bs = [];
+    var dica = apagandoPt ? 'Toque no ponto que quer apagar' : 'Arraste um ponto para mover · arraste o meio de um lado para criar ponto';
+    if (podeApagar) bs.push({ t: apagandoPt ? '✖ Sair de apagar' : '🗑 Apagar ponto', f: function () {
+      apagandoPt = !apagandoPt; if (modificar) modificar.setActive(!apagandoPt);
+      camada.changed(); barraEdicao(f);
+    } });
+    bs.push({ t: '↶ Desfazer', f: function () {
+      if (!snapshots.length) { aviso('Nada para desfazer.'); return; }
+      f.getGeometry().setCoordinates(snapshots.pop()); camada.changed();
+    } });
+    bs.push({ t: '✔ Concluir', pri: true, f: function () { concluirEdicao(f, true); } });
+    bs.push({ t: '✖ Cancelar', f: function () { concluirEdicao(f, false); } });
+    mostrarBarra(dica, bs);
+  }
+  function concluirEdicao(f, manter) {
+    if (!manter && geomOriginal && f.getGeometry()) f.getGeometry().setCoordinates(geomOriginal);
+    else if (mudou) atualizarTextosMedidos(f);
+    cancelarTudo();
+    expandido = f.getId(); selecionar(f); abrir('marc');
+  }
   function iniciarEdicaoForma(f) {
     cancelarTudo(); entrarModo(); fecharPainel();
-    modificar = new ol.interaction.Modify({ features: new ol.Collection([f]) });
+    var g = f.getGeometry(); if (!g) return;
+    editando = f; apagandoPt = false; snapshots = []; mudou = false; geomOriginal = coordsDe(g);
+    modificar = new ol.interaction.Modify({ features: new ol.Collection([f]), pixelTolerance: 16 });
+    modificar.on('modifystart', function () { guardarSnapshot(f); });
+    modificar.on('modifyend', function () { mudou = true; });
     map.addInteraction(modificar);
-    var g = f.getGeometry(); if (g) irPara(f);
-    mostrarBarra('Arraste os pontos para ajustar a forma', [
-      { t: '✔ Concluir edição', pri: true, f: function () { cancelarTudo(); expandido = f.getId(); selecionar(f); abrir('marc'); } }
-    ]);
+    irPara(f); camada.changed();
+    barraEdicao(f);
   }
   function cancelarTudo() {
     if (draw) { map.removeInteraction(draw); draw = null; }
     if (modificar) { map.removeInteraction(modificar); modificar = null; }
+    if (editando) { editando = null; apagandoPt = false; camada.changed(); }
     sairModo();
   }
+  // apagar ponto: toque perto de um vértice da marcação em edição
+  map.on('singleclick', function (e) {
+    if (!editando || !apagandoPt || !modificar) return;
+    var i = verticeMaisPerto(editando, e.pixel);
+    if (i < 0) { aviso('Toque bem em cima do ponto que quer apagar.'); return; }
+    if (apagarVertice(editando, i)) { camada.changed(); }
+  });
   // se a medição for ligada no meio de um desenho, o desenho é cancelado
   new MutationObserver(function () {
     if ((draw || modificar) && document.body.classList.contains('medindo')) { var m = window.medindo; cancelarTudo(); window.medindo = true; }

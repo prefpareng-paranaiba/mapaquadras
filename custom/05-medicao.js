@@ -2,22 +2,59 @@
 // Cálculo esférico (não usa as medidas da projeção do mapa, que distorcem ~6% em distância e ~13% em área aqui).
 (function () {
   // >>> geodesia
-  var R = 6371008.8;
+  // Cálculo no elipsoide WGS84 (mesmo do GPS/QGIS): distância por Vincenty, área por projeção equivalente (latitude autálica).
+  var EA = 6378137, EF = 1 / 298.257223563, EB = EA * (1 - EF), E2 = EF * (2 - EF), E1 = Math.sqrt(E2);
+  var R = 6371008.8;                       // só como reserva se o Vincenty não convergir
   function rad(x) { return x * Math.PI / 180; }
-  function distancia(a, b) {
-    var A = ol.proj.toLonLat(a), B = ol.proj.toLonLat(b);
+  function distEsfera(A, B) {
     var f1 = rad(A[1]), f2 = rad(B[1]), dl = rad(B[0] - A[0]);
     var h = Math.pow(Math.sin((f2 - f1) / 2), 2) + Math.cos(f1) * Math.cos(f2) * Math.pow(Math.sin(dl / 2), 2);
     return 2 * R * Math.asin(Math.sqrt(h));
   }
-  function areaEsferica(cs) {              // cs = vértices sem repetir o primeiro
+  function distLonLat(A, B) {              // A, B = [lon, lat] em graus; metros no elipsoide
+    var L = rad(B[0] - A[0]);
+    var U1 = Math.atan((1 - EF) * Math.tan(rad(A[1]))), U2 = Math.atan((1 - EF) * Math.tan(rad(B[1])));
+    var sU1 = Math.sin(U1), cU1 = Math.cos(U1), sU2 = Math.sin(U2), cU2 = Math.cos(U2);
+    var lam = L, prev, it = 0, sS, cS, sig, sinA, c2A, c2SM, C;
+    do {
+      var sl = Math.sin(lam), cl = Math.cos(lam);
+      sS = Math.sqrt(Math.pow(cU2 * sl, 2) + Math.pow(cU1 * sU2 - sU1 * cU2 * cl, 2));
+      if (sS === 0) return 0;              // pontos coincidentes
+      cS = sU1 * sU2 + cU1 * cU2 * cl;
+      sig = Math.atan2(sS, cS);
+      sinA = cU1 * cU2 * sl / sS;
+      c2A = 1 - sinA * sinA;
+      c2SM = c2A !== 0 ? cS - 2 * sU1 * sU2 / c2A : 0;
+      C = EF / 16 * c2A * (4 + EF * (4 - 3 * c2A));
+      prev = lam;
+      lam = L + (1 - C) * EF * sinA * (sig + C * sS * (c2SM + C * cS * (-1 + 2 * c2SM * c2SM)));
+    } while (Math.abs(lam - prev) > 1e-12 && ++it < 100);
+    if (it >= 100 || isNaN(lam)) return distEsfera(A, B);
+    var u2 = c2A * (EA * EA - EB * EB) / (EB * EB);
+    var A1 = 1 + u2 / 16384 * (4096 + u2 * (-768 + u2 * (320 - 175 * u2)));
+    var B1 = u2 / 1024 * (256 + u2 * (-128 + u2 * (74 - 47 * u2)));
+    var dS = B1 * sS * (c2SM + B1 / 4 * (cS * (-1 + 2 * c2SM * c2SM) - B1 / 6 * c2SM * (-3 + 4 * sS * sS) * (-3 + 4 * c2SM * c2SM)));
+    return EB * A1 * (sig - dS);
+  }
+  function distancia(a, b) { return distLonLat(ol.proj.toLonLat(a), ol.proj.toLonLat(b)); }
+  // seno da latitude autálica (esfera de mesma área do elipsoide)
+  function q(sp) { return (1 - E2) * (sp / (1 - E2 * sp * sp) - (1 / (2 * E1)) * Math.log((1 - E1 * sp) / (1 + E1 * sp))); }
+  var QP = q(1), RQ = Math.sqrt(EA * EA / 2 + EB * EB / 2 * Math.atanh(E1) / E1);   // RQ ≈ 6371007,18 m
+  function areaEsferica(cs) {              // nome mantido: cs = vértices (EPSG:3857) sem repetir o primeiro; área elipsoidal em m²
     var s = 0, n = cs.length;
     for (var i = 0; i < n; i++) {
       var a = ol.proj.toLonLat(cs[i]), b = ol.proj.toLonLat(cs[(i + 1) % n]);
-      s += rad(b[0] - a[0]) * (2 + Math.sin(rad(a[1])) + Math.sin(rad(b[1])));
+      s += rad(b[0] - a[0]) * (2 + q(Math.sin(rad(a[1]))) / QP + q(Math.sin(rad(b[1]))) / QP);
     }
-    return Math.abs(s * R * R / 2);
+    return Math.abs(s * RQ * RQ / 2);
   }
+  // usado também pelo 15-camadas-marcacoes.js (coordenadas EPSG:3857)
+  window.GEO = {
+    distancia: distancia,
+    comprimento: function (cs) { var t = 0; for (var i = 0; i < cs.length - 1; i++) t += distancia(cs[i], cs[i + 1]); return t; },
+    area: function (anel) { var c = anel.slice(); var u = c[c.length - 1], p = c[0]; if (u[0] === p[0] && u[1] === p[1]) c.pop(); return areaEsferica(c); },
+    perimetro: function (anel) { var t = 0; for (var i = 0; i < anel.length - 1; i++) t += distancia(anel[i], anel[i + 1]); return t; }
+  };
   // <<< geodesia
   function fmtDist(m) {
     return m < 1000

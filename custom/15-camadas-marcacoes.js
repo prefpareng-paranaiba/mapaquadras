@@ -11,8 +11,8 @@
   var CH_CAM = 'mq.camadas.v1';
   var CH_COR = 'mq.cor.v1';
   var CH_PASTA = 'mq.pastas.v1';
-  var CORES = ['#e53935', '#d81b60', '#fb8c00', '#f4511e', '#fdd835', '#c0ca33', '#43a047', '#00897b',
-    '#00acc1', '#1e88e5', '#3949ab', '#8e24aa', '#6d4c41', '#757575', '#000000', '#ffffff'];
+  var COR_PADRAO = '#000000';                     // cor inicial de todo ponto/linha/polígono novo (a troca é pela roda de cores)
+  var CORES = [COR_PADRAO];
   var MAX_IMPORT_AVISO = 2000;
 
   // ---------- armazenamento (tudo em try/catch: modo privado, cache limpo, espaço cheio) ----------
@@ -33,7 +33,7 @@
   }
   function hexRgba(hex, a) {
     var m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
-    if (!m) return 'rgba(229,57,53,' + a + ')';
+    if (!m) return 'rgba(0,0,0,' + a + ')';
     var n = parseInt(m[1], 16);
     return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
   }
@@ -48,6 +48,24 @@
     var s = m2.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' m²';
     if (m2 >= 10000) s += ' (' + (m2 / 10000).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' ha)';
     return s;
+  }
+  // medidas no elipsoide WGS84 (vêm do 05-medicao.js); se ele não estiver carregado, cai no cálculo esférico do OpenLayers
+  function geoComp(coords) {
+    if (window.GEO) return window.GEO.comprimento(coords);
+    return ol.sphere.getLength(new ol.geom.LineString(coords), { projection: 'EPSG:3857' });
+  }
+  function geoArea(g) {
+    if (window.GEO) {
+      if (g.getType() === 'MultiPolygon') return g.getPolygons().reduce(function (t, p) { return t + geoArea(p); }, 0);
+      var an = g.getCoordinates(), t = window.GEO.area(an[0]);
+      for (var i = 1; i < an.length; i++) t -= window.GEO.area(an[i]);       // furos
+      return t;
+    }
+    return ol.sphere.getArea(g, { projection: 'EPSG:3857' });
+  }
+  function geoCompGeom(g) {
+    if (g.getType() === 'MultiLineString') return g.getLineStrings().reduce(function (t, l) { return t + geoCompGeom(l); }, 0);
+    return geoComp(g.getCoordinates());
   }
   var toastEl = null, toastT = null;
   function aviso(msg) {
@@ -84,7 +102,7 @@
   function estilo(f, res) {
     if (f.get('visible') === false) return null;
     var g = f.getGeometry(); if (!g) return null;
-    var cor = f.get('color') || '#e53935', t = g.getType(), sel = f === selecionada, out = [];
+    var cor = f.get('color') || COR_PADRAO, t = g.getType(), sel = f === selecionada, out = [];
     var halo = new ol.style.Stroke({ color: sel ? '#ffeb3b' : '#ffffff', width: sel ? 9 : 6, lineCap: 'round', lineJoin: 'round' });
     var traco = new ol.style.Stroke({ color: cor, width: 3, lineCap: 'round', lineJoin: 'round' });
     if (t === 'Point' || t === 'MultiPoint') {
@@ -127,11 +145,11 @@
             var up = [Math.sin(rl.dir) * -1, Math.cos(rl.dir)];                // "para cima" do texto, no mapa
             if (g.intersectsCoordinate([mid[0] + up[0] * 6 * res, mid[1] + up[1] * 6 * res])) dy = 11;
           }
-          out.push(txtEstilo(new ol.geom.Point(mid), fmtDist(ol.sphere.getLength(new ol.geom.LineString([a, b]), ob)), dy, rl.rot));
+          out.push(txtEstilo(new ol.geom.Point(mid), fmtDist(geoComp([a, b])), dy, rl.rot));
         }
       }
       var total = '';
-      try { total = t === 'Polygon' ? 'Área: ' + fmtArea(ol.sphere.getArea(g, ob)) : 'Total: ' + fmtDist(ol.sphere.getLength(g, ob)); } catch (e) {}
+      try { total = t === 'Polygon' ? 'Área: ' + fmtArea(geoArea(g)) : 'Total: ' + fmtDist(geoCompGeom(g)); } catch (e) {}
       if (total) out.push(txtEstilo(pontoRotulo(g), total, nome && res < 6 ? 16 : 0));
     }
     // edição de pontos: mostra todos os vértices (vermelhos e maiores no modo "apagar ponto")
@@ -295,7 +313,51 @@
     botoes.style.top = Math.round(base + 8) + 'px';
     painel.style.top = '';   // no desktop o painel acompanha os botões
     if (window.innerWidth > 640) painel.style.top = Math.round(base + 8) + 'px';
+    ajustarDocks();
   }
+
+  // ---------- celular: não ficar escondido atrás das abas fixas de baixo (PDF, Street View...) ----------
+  // Procura elementos fixos, largos, colados na parte de baixo da tela e sobe o painel / a barra de desenho / o aviso acima deles.
+  var dockAtual = 0;
+  function alturaDocks() {
+    var H = window.innerHeight, W = window.innerWidth, topo = H;
+    var ignorar = [painel, botoes, barra, toastEl, document.getElementById('mqBarra')];
+    var mapaEl = null; try { mapaEl = map.getTargetElement(); } catch (e) {}
+    function testa(n) {
+      if (!n || n.nodeType !== 1 || ignorar.indexOf(n) >= 0) return;
+      var cs = window.getComputedStyle(n);
+      if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0 || cs.pointerEvents === 'none') return;
+      var r = n.getBoundingClientRect();
+      if (r.height < 20 || r.width < W * 0.6 || r.top < H * 0.25 || r.top >= H - 1 || r.bottom < H * 0.5) return;
+      if (r.top < topo) topo = r.top;
+    }
+    Array.prototype.forEach.call(document.body.children, function (n) {
+      if (mapaEl && (n === mapaEl || n.contains(mapaEl))) return;
+      testa(n);
+      if (n.children && n.children.length < 30) Array.prototype.forEach.call(n.children, testa);   // um nível a mais (contêiner das abas)
+    });
+    return Math.max(0, Math.round(H - topo));
+  }
+  function ajustarDocks() {
+    var mob = window.innerWidth <= 640;
+    dockAtual = mob ? alturaDocks() : 0;
+    if (mob) {
+      var H = window.innerHeight;
+      painel.style.bottom = dockAtual + 'px';
+      painel.style.maxHeight = Math.max(170, Math.min(Math.round(H * 0.56), H - dockAtual - 120)) + 'px';
+      painel.style.paddingBottom = dockAtual ? '0' : '';
+      if (barra) barra.style.bottom = (18 + dockAtual) + 'px';
+      if (toastEl) toastEl.style.bottom = (80 + dockAtual) + 'px';
+    } else {
+      painel.style.bottom = ''; painel.style.maxHeight = ''; painel.style.paddingBottom = '';
+      if (barra) barra.style.bottom = ''; if (toastEl) toastEl.style.bottom = '';
+    }
+  }
+  // as abas abrem/fecham sem avisar: confere de tempos em tempos, só enquanto o painel ou a barra de desenho estiverem visíveis
+  setInterval(function () {
+    if (window.innerWidth > 640) return;
+    if (painel.style.display !== 'none' || (barra && barra.style.display === 'block')) ajustarDocks();
+  }, 500);
 
   // ---------- painel ----------
   var painel = el('div', { id: 'mqPainel', style: 'display:none' });
@@ -438,7 +500,7 @@
       var nm = el('span', { class: 'mq-nome', text: f.get('name') || '(sem nome)', style: 'cursor:pointer' });
       nm.onclick = function () { irPara(f); };
       return el('div', { class: 'mq-lin' }, [
-        cb, el('span', { style: 'width:12px;height:12px;border-radius:50%;flex:none;box-shadow:0 0 0 1px #888;background:' + (f.get('color') || '#e53935') }),
+        cb, el('span', { style: 'width:12px;height:12px;border-radius:50%;flex:none;box-shadow:0 0 0 1px #888;background:' + (f.get('color') || COR_PADRAO) }),
         el('label', { style: 'flex:1;min-width:0' }, [nm])
       ]);
     });
@@ -468,8 +530,8 @@
     var t = g.getType(), o = { projection: 'EPSG:3857' };
     try {
       if (t === 'Point') { var c = ol.proj.toLonLat(g.getCoordinates()); return 'Ponto · ' + c[1].toFixed(6) + ', ' + c[0].toFixed(6); }
-      if (t === 'LineString' || t === 'MultiLineString') return 'Linha · ' + fmtDist(ol.sphere.getLength(g, o));
-      if (t === 'Polygon' || t === 'MultiPolygon') return 'Polígono · ' + fmtArea(ol.sphere.getArea(g, o));
+      if (t === 'LineString' || t === 'MultiLineString') return 'Linha · ' + fmtDist(geoCompGeom(g));
+      if (t === 'Polygon' || t === 'MultiPolygon') return 'Polígono · ' + fmtArea(geoArea(g));
     } catch (e) {}
     return tipoNome(g);
   }
@@ -504,7 +566,7 @@
   function mostrarBannerArmaz(sim) { var b = document.getElementById('mqBannerArmaz'); if (b) b.style.display = sim ? 'block' : 'none'; }
 
   function itemMarcacao(f) {
-    var id = f.getId(), aberto = expandido === id, cor = f.get('color') || '#e53935';
+    var id = f.getId(), aberto = expandido === id, cor = f.get('color') || COR_PADRAO;
     var cb = el('input', { type: 'checkbox', title: 'Mostrar/ocultar' }); cb.checked = f.get('visible') !== false;
     cb.onchange = function () { f.set('visible', cb.checked); };
     var nomeEl = el('span', { class: 'mq-nome', text: f.get('name') || '(sem nome)', style: 'font-weight:bold' });
@@ -533,18 +595,18 @@
     nome.oninput = function () { f.set('name', nome.value); nomeEl.textContent = nome.value || '(sem nome)'; };
     var desc = el('textarea', { rows: '3', placeholder: 'Descrição / observações' }); desc.value = f.get('description') || '';
     desc.oninput = function () { f.set('description', desc.value); };
-    var cores = el('div', { class: 'mq-grade' });
-    CORES.forEach(function (c) {
-      var b = el('button', { class: 'mq-cor' + ((f.get('color') || '') === c ? ' on' : ''), title: c, style: 'background:' + c });
-      b.onclick = function () { f.set('color', c); gravarLS(CH_COR, c); render(); };
-      cores.appendChild(b);
-    });
-    var atual = f.get('color') || '', fora = CORES.indexOf(atual) < 0;      // cor personalizada
-    var pick = el('input', { type: 'color', title: 'Outra cor…', 'aria-label': 'Escolher outra cor',
-      style: 'width:32px;height:32px;padding:0;border:0;border-radius:50%;cursor:pointer;background:none;' + (fora ? 'box-shadow:0 0 0 3px #1565c0' : 'box-shadow:0 0 0 1px #999') });
-    pick.value = /^#[0-9a-f]{6}$/i.test(atual) ? atual : '#e53935';
-    pick.onchange = function () { f.set('color', pick.value); gravarLS(CH_COR, pick.value); render(); };
-    cores.appendChild(pick);
+    var atual = /^#[0-9a-f]{6}$/i.test(f.get('color') || '') ? f.get('color') : COR_PADRAO;
+    var miolo = el('span', { style: 'position:absolute;left:9px;top:9px;width:20px;height:20px;border-radius:50%;box-shadow:0 0 0 2px #fff;pointer-events:none;background:' + atual });
+    var pick = el('input', { type: 'color', title: 'Escolher cor', 'aria-label': 'Escolher cor',
+      style: 'position:absolute;left:0;top:0;width:100%;height:100%;opacity:0;cursor:pointer;border:0;padding:0' });
+    pick.value = atual;
+    pick.oninput = function () { f.set('color', pick.value); miolo.style.background = pick.value; };     // muda ao vivo no mapa
+    pick.onchange = function () { f.set('color', pick.value); render(); };
+    var cores = el('div', { class: 'mq-grade', style: 'align-items:center;gap:10px' }, [
+      el('span', { style: 'position:relative;display:inline-block;width:38px;height:38px;border-radius:50%;box-shadow:0 0 0 1px #999;' +
+        'background:conic-gradient(#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)' }, [miolo, pick]),
+      el('span', { class: 'mq-peq', text: 'Cor' })
+    ]);
     var acoes = el('div', { class: 'mq-grade' }, [
       el('button', { class: 'mq-btn pri', text: '✔ Pronto', onclick: function () { expandido = null; selecionar(null); render(); } }),
       el('button', { class: 'mq-btn', text: '✥ Editar pontos', title: 'Mover, adicionar ou apagar pontos', onclick: function () { iniciarEdicaoForma(f); } }),
@@ -571,7 +633,7 @@
   function irPara(f) {
     var g = f.getGeometry(); if (!g) return;
     var v = map.getView(), mob = window.innerWidth <= 640;
-    var pad = [70, 40, mob && painelAberto() ? Math.round(window.innerHeight * 0.55) + 20 : 70, mob ? 40 : (painelAberto() ? 400 : 70)];
+    var pad = [70, 40, mob && painelAberto() ? painel.offsetHeight + dockAtual + 20 : 70, mob ? 40 : (painelAberto() ? 400 : 70)];
     if (g.getType() === 'Point') v.animate({ center: g.getCoordinates(), zoom: Math.max(v.getZoom(), 18), duration: 350 });
     else v.fit(g.getExtent(), { padding: pad, maxZoom: 19, duration: 400 });
   }
@@ -589,7 +651,7 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
   }
   function estiloKml(f) {
-    var cor = f.get('color') || '#e53935', t = f.getGeometry().getType();
+    var cor = f.get('color') || COR_PADRAO, t = f.getGeometry().getType();
     if (t === 'Point' || t === 'MultiPoint') {
       return new ol.style.Style({ image: new ol.style.Icon({ src: 'https://maps.google.com/mapfiles/kml/paddle/wht-blank.png', color: cor, scale: 1 }) });
     }
@@ -628,7 +690,7 @@
       fs = fs.filter(function (f) { return f.getGeometry(); });
       if (!fs.length) { aviso('O arquivo não tem geometrias para importar.'); return; }
       if (fs.length > MAX_IMPORT_AVISO && !confirm('O arquivo tem ' + fs.length + ' itens; o mapa pode ficar lento. Importar mesmo assim?')) return;
-      var cor = lerLS(CH_COR) || CORES[0], n = 0;
+      var cor = COR_PADRAO, n = 0;
       fs.forEach(function (f) {
         var p = f.getProperties();
         f.setId(novoId());
@@ -674,9 +736,10 @@
     barra.appendChild(el('div', { text: dica, style: 'font-weight:bold' }));
     var l = el('div'); botoesBarra.forEach(function (b) { l.appendChild(el('button', { class: 'mq-btn' + (b.pri ? ' pri' : ''), text: b.t, onclick: b.f })); });
     barra.appendChild(l); barra.style.display = 'block';
+    ajustarDocks();
   }
   function estiloEsboco(f) {
-    var cor = lerLS(CH_COR) || CORES[0], t = f.getGeometry().getType();
+    var cor = COR_PADRAO, t = f.getGeometry().getType();
     var base = [new ol.style.Style({ image: new ol.style.Circle({ radius: 6, fill: new ol.style.Fill({ color: '#fff' }), stroke: new ol.style.Stroke({ color: cor, width: 3 }) }) })];
     if (t !== 'Point') base.unshift(new ol.style.Style({
       stroke: new ol.style.Stroke({ color: cor, width: 3, lineDash: [8, 6] }),
@@ -693,7 +756,7 @@
       var f = ev.feature, tn = tipo === 'Point' ? 'Ponto' : (tipo === 'LineString' ? 'Linha' : 'Polígono');
       var n = fonte.getFeatures().filter(function (x) { return x.getGeometry() && x.getGeometry().getType() === tipo; }).length + 1;
       f.setId(novoId());
-      f.setProperties({ name: tn + ' ' + n, description: '', color: lerLS(CH_COR) || CORES[0], visible: true, created: new Date().toISOString() });
+      f.setProperties({ name: tn + ' ' + n, description: '', color: COR_PADRAO, visible: true, created: new Date().toISOString() });
       setTimeout(function () {
         encerrarDesenho();
         expandido = f.getId(); selecionar(f); abrir('marc');
@@ -737,11 +800,11 @@
     var rotulo, novaDesc;
     try {
       if (t === 'Polygon') {
-        var ring = g.getCoordinates()[0], area = ol.sphere.getArea(g, ob), per = ol.sphere.getLength(new ol.geom.LineString(ring), ob);
+        var ring = g.getCoordinates()[0], area = geoArea(g), per = geoComp(ring);
         rotulo = 'Área ' + txtArea2(area);
         novaDesc = 'Área: ' + txtArea2(area) + ' | Perímetro: ' + txtDist2(per) + ' | Centro: ' + centroLatLon(ring.slice(0, -1));
       } else if (t === 'LineString') {
-        var d = ol.sphere.getLength(g, ob);
+        var d = geoCompGeom(g);
         rotulo = 'Distância ' + txtDist2(d); novaDesc = 'Distância: ' + txtDist2(d);
       } else return;
     } catch (e) { return; }
@@ -853,7 +916,7 @@
   function adicionarMarcacao(geom, props, editar) {
     var f = new ol.Feature(geom);
     f.setId(novoId());
-    var p = { name: '', description: '', color: lerLS(CH_COR) || CORES[0], visible: true, created: new Date().toISOString() };
+    var p = { name: '', description: '', color: COR_PADRAO, visible: true, created: new Date().toISOString() };
     if (props) Object.keys(props).forEach(function (k) { p[k] = props[k]; });
     f.setProperties(p);
     fonte.addFeature(f);

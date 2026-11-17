@@ -1,9 +1,15 @@
-// ================= SELEÇÃO DE QUADRA NO CELULAR: toque rápido, com folga no dedo e destaque imediato =================
+// ================= SELEÇÃO NO CELULAR E NO COMPUTADOR: toque rápido, com folga no dedo e destaque imediato =================
 // Problemas que isto resolve (só no toque; o mouse continua como antes):
 //  1) O OpenLayers espera ~250 ms depois do toque para ter certeza de que não é duplo toque -> "demora para selecionar".
 //  2) Com o dedo, qualquer tremida de 1-2 px é lida como arrasto e o toque é descartado -> "não reconhece que estou selecionando".
 //  3) Tocar na rua, entre duas quadras, ou perto da linha não pegava nada -> agora pega a quadra mais próxima (até ~18 px).
-//  4) Não havia retorno visual: agora a quadra tocada ganha contorno laranja (igual ao do mouse) enquanto o balão está aberto.
+//  4) Não havia retorno visual: agora a feição tocada ganha contorno laranja (igual ao do mouse) enquanto o balão está aberto.
+//
+// PRIORIDADE (várias camadas de polígonos sobrepostas): vale a MAIS ESPECÍFICA que estiver sob o clique:
+//     1º área construída  ->  2º lote  ->  3º quadra
+//  Camadas desligadas no painel (ou com opacidade 0) são ignoradas. Camada sem campos de balão também é ignorada
+//  (o clique cai para a camada de baixo). As camadas são achadas pelo NOME da variável (lyr_...), então não importa
+//  o número que o qgis2web põe no final (Quadras_1, Lotes_2, AConstruida_3...).
 (function () {
   'use strict';
 
@@ -12,33 +18,88 @@
   var DURACAO_MAX = 350;       // ms: acima disso é toque longo (ferramenta de coordenada), não toque
   var ultimoToque = { t: 0, x: 0, y: 0 };
 
-  // ---------- quadras que têm balão (camada com campos de popup) ----------
-  function camadasSelecionaveis() {
-    var lista = (typeof camadasDeQuadras === 'function') ? camadasDeQuadras() : [];
-    return lista.filter(function (l) {
-      return l.getVisible() && l.getOpacity() > 0 && l.get('interactive') !== false && l.get('fieldImages');
-    });
+  // ---------- ordem de prioridade (da mais específica para a mais ampla) ----------
+  // re: trecho do nome da variável da camada (lyr_...). tolToque: folga do dedo em px (só no toque).
+  var GRUPOS = [
+    { re: /Constru/i, tolToque: 8 },               // construções são pequenas: um pouco de folga para o dedo
+    { re: /Lotes/i,   tolToque: 0 },
+    { re: /Quadras/i, tolToque: TOLERANCIA_PX }    // quadra: "a mais próxima" como era antes
+  ];
+
+  function temBalao(l) {
+    var campos = l.get('fieldImages');
+    if (!campos) return false;
+    for (var k in campos) { if (campos[k] !== 'Hidden') return true; }
+    return false;
+  }
+  function podeSelecionar(l) {
+    return l.getVisible() && l.getOpacity() > 0 && l.get('interactive') !== false && temBalao(l);
   }
 
-  // quadra que contém o ponto; se não houver, a mais próxima dentro da folga do dedo
-  function acharQuadra(coord, tolPx) {
-    var res = map.getView().getResolution() || 1, folga = tolPx * res;
-    var ext = ol.extent.buffer([coord[0], coord[1], coord[0], coord[1]], folga);
-    var dentro = null, dentroLayer = null, melhor = null, melhorLayer = null, dMin = Infinity;
-    camadasSelecionaveis().forEach(function (l) {
-      l.getSource().forEachFeatureIntersectingExtent(ext, function (f) {
-        if (dentro) return true;
-        var g = f.getGeometry(); if (!g) return;
-        if (g.intersectsCoordinate(coord)) { dentro = f; dentroLayer = l; return true; }
-        var c = g.getClosestPoint(coord), d = Math.hypot(c[0] - coord[0], c[1] - coord[1]);
-        if (d < dMin) { dMin = d; melhor = f; melhorLayer = l; }
+  // todas as camadas vetoriais do qgis2web (variáveis globais lyr_...), mais as que camadasDeQuadras() devolver
+  function camadasVetoriais() {
+    var lista = [];
+    Object.keys(window).forEach(function (k) {
+      if (k.indexOf('lyr_') !== 0) return;
+      var l = window[k];
+      if (!l || typeof l.getSource !== 'function' || typeof l.get !== 'function') return;
+      var s = l.getSource();
+      if (s && typeof s.forEachFeatureIntersectingExtent === 'function') lista.push({ nome: k, l: l });
+    });
+    try {
+      if (typeof camadasDeQuadras === 'function') {
+        camadasDeQuadras().forEach(function (l) {
+          if (!lista.some(function (x) { return x.l === l; })) lista.push({ nome: 'lyr_Quadras', l: l });
+        });
+      }
+    } catch (e) {}
+    return lista;
+  }
+
+  // camadas selecionáveis agrupadas na ordem de prioridade
+  function gruposPorPrioridade() {
+    var todas = camadasVetoriais(), usadas = [];
+    return GRUPOS.map(function (g) {
+      var cams = [];
+      todas.forEach(function (x) {
+        if (usadas.indexOf(x.l) >= 0 || !g.re.test(x.nome) || !podeSelecionar(x.l)) return;
+        cams.push(x.l); usadas.push(x.l);
       });
+      return { tolToque: g.tolToque, camadas: cams };
     });
-    if (dentro) return { f: dentro, l: dentroLayer, fora: false };
-    return (melhor && dMin <= folga) ? { f: melhor, l: melhorLayer, fora: true } : null;
   }
 
-  // ---------- destaque da quadra selecionada (contorno laranja, sem preencher) ----------
+  // lista plana (construção, lote, quadra): usada também pelo destaque ao passar o mouse (07-hover-quadra.js)
+  window.camadasSelecionaveisPrioridade = function () {
+    var r = [];
+    gruposPorPrioridade().forEach(function (g) { g.camadas.forEach(function (l) { r.push(l); }); });
+    return r;
+  };
+
+  // feição sob o ponto, respeitando a prioridade; no toque, cada camada tem a sua folga de dedo
+  function acharQuadra(coord, ehToque) {
+    var res = map.getView().getResolution() || 1;
+    var grupos = gruposPorPrioridade();
+    for (var i = 0; i < grupos.length; i++) {
+      var folga = (ehToque ? grupos[i].tolToque : 0) * res;
+      var ext = ol.extent.buffer([coord[0], coord[1], coord[0], coord[1]], folga);
+      var dentro = null, dentroLayer = null, melhor = null, melhorLayer = null, dMin = Infinity;
+      grupos[i].camadas.forEach(function (l) {
+        l.getSource().forEachFeatureIntersectingExtent(ext, function (f) {
+          if (dentro) return true;
+          var g = f.getGeometry(); if (!g) return;
+          if (g.intersectsCoordinate(coord)) { dentro = f; dentroLayer = l; return true; }
+          var c = g.getClosestPoint(coord), d = Math.hypot(c[0] - coord[0], c[1] - coord[1]);
+          if (d < dMin) { dMin = d; melhor = f; melhorLayer = l; }
+        });
+      });
+      if (dentro) return { f: dentro, l: dentroLayer, fora: false };
+      if (melhor && dMin <= folga) return { f: melhor, l: melhorLayer, fora: true };
+    }
+    return null;
+  }
+
+  // ---------- destaque da feição selecionada (contorno laranja, sem preencher) ----------
   var fonteSel = new ol.source.Vector();
   map.addLayer(new ol.layer.Vector({
     source: fonteSel, zIndex: 9995, interactive: false,
@@ -56,7 +117,7 @@
     overlayPopup.on('change:position', function () { if (!overlayPopup.getPosition()) destacar(null); });
   } catch (e) {}
 
-  // ---------- abre o balão da quadra (mesmo conteúdo que o qgis2web montava) ----------
+  // ---------- abre o balão da feição (mesmo conteúdo que o qgis2web montava) ----------
   function abrirBalao(achado, coord) {
     var l = achado.l, f = achado.f;
     var campos = l.get('fieldImages') || {}, temCampo = false;
@@ -68,7 +129,7 @@
     updatePopup();
   }
 
-  // onde ancorar o balão: no próprio toque; se o dedo pegou a quadra "por perto", dentro da quadra
+  // onde ancorar o balão: no próprio toque; se o dedo pegou a feição "por perto", dentro dela
   function pontoAncora(achado, coord) {
     if (!achado.fora) return coord;
     try {
@@ -82,7 +143,7 @@
     if (doHover || sketch || window.medindo) return;
     var coord = map.getCoordinateFromPixel(pixel);
     if (!coord) return;
-    var achado = acharQuadra(coord, ehToque ? TOLERANCIA_PX : 0);
+    var achado = acharQuadra(coord, ehToque);
     if (!achado) {
       destacar(null);
       popupContent = ''; popupCoord = coord; updatePopup();      // toque no vazio fecha o balão, como antes

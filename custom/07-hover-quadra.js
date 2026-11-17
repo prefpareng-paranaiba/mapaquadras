@@ -1,4 +1,4 @@
-// ================= DESTAQUE AO PASSAR O MOUSE NA QUADRA: SÓ CONTORNO, SEM PREENCHIMENTO =================
+// ================= DESTAQUE AO PASSAR O MOUSE NA QUADRA / LOTE / CONSTRUÇÃO: SÓ CONTORNO, SEM PREENCHIMENTO =================
 (function () {
   // desliga o destaque padrão do qgis2web (preenchimento branco por cima do mosaico)
   try { doHighlight = false; } catch (e) {}
@@ -18,21 +18,34 @@
   var quadras = (typeof camadasDeQuadras === 'function') ? camadasDeQuadras() : [];
   var atual = null;
 
+  // Camadas consideradas no hover, em ordem de prioridade (construção, lote, quadra).
+  // A lista vem do 16-selecao-toque.js (mesma regra do clique, inclusive camadas desligadas no painel).
+  // Se aquele arquivo não carregou, volta ao comportamento antigo (só quadras).
+  function camadasHover() {
+    if (typeof window.camadasSelecionaveisPrioridade === 'function') {
+      try { return window.camadasSelecionaveisPrioridade(); } catch (e) {}
+    }
+    return quadras.filter(function (l) {
+      return l.getVisible() && l.getOpacity() > 0 && l.get('interactive') !== false;
+    });
+  }
+
   var pendente = false, pixelUlt = null;
   // forEachFeatureAtPixel desenha todas as quadras num canvas do tamanho da tela e lê os pixels (getImageData) a cada vez que o mapa
-  // se move: é o aviso "Multiple readback operations" do console e o maior peso do hover. Aqui é só geometria: a quadra cujo
+  // se move: é o aviso "Multiple readback operations" do console e o maior peso do hover. Aqui é só geometria: a feição cujo
   // contorno está a até 5 px do mouse (índice espacial, sem canvas). Mesmo resultado do contorno de antes, sem o custo.
+  // Com várias camadas, vence o contorno mais próximo; num empate (diferença menor que 1 px) vence a camada mais específica.
   function quadraPerto(pixel) {
     var coord = map.getCoordinateFromPixel(pixel);
     if (!coord) return null;
-    var tol = 5 * (map.getView().getResolution() || 1), dMin = tol, melhor = null;
+    var res = map.getView().getResolution() || 1;
+    var tol = 5 * res, eps = 1 * res, dMin = Infinity, melhor = null;
     var ext = [coord[0] - tol, coord[1] - tol, coord[0] + tol, coord[1] + tol];
-    quadras.forEach(function (l) {
-      if (!l.getVisible() || l.getOpacity() <= 0 || l.get('interactive') === false) return;
+    camadasHover().forEach(function (l) {
       l.getSource().forEachFeatureIntersectingExtent(ext, function (f) {
         var g = f.getGeometry(); if (!g) return;
         var c = g.getClosestPoint(coord), d = Math.hypot(c[0] - coord[0], c[1] - coord[1]);
-        if (d <= dMin) { dMin = d; melhor = f; }
+        if (d <= tol && d < dMin - eps) { dMin = d; melhor = f; }
       });
     });
     return melhor;

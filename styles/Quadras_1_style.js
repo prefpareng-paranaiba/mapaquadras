@@ -19,11 +19,11 @@ var style_Quadras_1 = function(feature, resolution){
     var overflow = false;
     var repeat = 0;
     var placement = 'point';
-    if (feature.get("Quadra") !== null) {
+    if (feature.get("Quadra") !== null && resolution > 0 && resolution < 2) {
         labelText = String(feature.get("Quadra"));
     }
     var style = [ new ol.style.Style({
-        stroke: new ol.style.Stroke({color: 'rgba(251,251,14,1.0)', lineDash: null, lineCap: 'square', lineJoin: 'bevel', width: 2.8499999999999996}),
+        stroke: new ol.style.Stroke({color: 'rgba(239,255,0,1.0)', lineDash: null, lineCap: 'square', lineJoin: 'bevel', width: 0.988}),
         text: createTextStyle(feature, resolution, labelText, labelFont,
                               labelFill, placement, bufferColor,
                               bufferWidth, textAlign, offsetX, offsetY, overflow, repeat)

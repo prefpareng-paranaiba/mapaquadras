@@ -14,7 +14,10 @@ mosaicos.forEach(function (m) {
     })
   };
   if (m.extensao) optMosaico.extent = ol.proj.transformExtent(m.extensao, 'EPSG:4326', 'EPSG:3857');
-  map.addLayer(new ol.layer.Tile(optMosaico));
+  var camadaMosaico = new ol.layer.Tile(optMosaico);
+  // o painel de camadas junta o mosaico com os polígonos do mesmo bairro (nome sem o que vem entre parênteses, ou o campo "bairro" de mosaicos.js)
+  camadaMosaico.set('bairro', m.bairro || String(m.nome).replace(/\s*\(.*\)\s*$/, ''));
+  map.addLayer(camadaMosaico);
 });
 // ---- nomes de ruas por cima do mosaico (camada só de rótulos, fundo transparente) ----
 var FONTE_ROTULOS = 'google';   // 'google' ou 'carto' (OpenStreetMap)

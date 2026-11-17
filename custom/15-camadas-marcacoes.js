@@ -219,6 +219,7 @@
   function nomeCamada(l) { return String(l.get('title')).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim(); }
   var pastasAberta = {};
   try { pastasAberta = JSON.parse(lerLS(CH_PASTA) || '{}') || {}; } catch (e) { pastasAberta = {}; }
+  var PASTAS_FECHADAS_PADRAO = { 'bairros': true };            // pastas que começam recolhidas (até a pessoa abrir uma vez); as de cada bairro ('bairro:...') também
   var estadoCam = {};
   try { estadoCam = JSON.parse(lerLS(CH_CAM) || '{}') || {}; } catch (e) { estadoCam = {}; }
   function salvarCam() { gravarLS(CH_CAM, JSON.stringify(estadoCam)); }
@@ -449,7 +450,8 @@
       l.setVisible(v); (estadoCam[n] = estadoCam[n] || {}).v = v;
     }
     function pasta(id, titulo, icone, contagem, ligada, parcial, aoMestre, filhos) {
-      var aberta = pastasAberta[id] !== false;      // padrão: aberta
+      var fechadaPadrao = !!PASTAS_FECHADAS_PADRAO[id] || id.indexOf('bairro:') === 0;
+      var aberta = (id in pastasAberta) ? pastasAberta[id] !== false : !fechadaPadrao;   // padrão: aberta, salvo as recolhidas acima
       var mestre = el('input', { type: 'checkbox', class: 'mq-sw', 'aria-label': 'Ligar ou desligar tudo em ' + titulo, title: 'Ligar/desligar tudo desta pasta' });
       mestre.checked = ligada; mestre.indeterminate = parcial;
       mestre.onchange = function () { aoMestre(mestre.checked); render(); };
@@ -471,21 +473,58 @@
       }
       return box;
     }
-    function pastaDeCamadas(id, titulo, icone, lista) {
-      var ativos = lista.filter(function (l) { return l.getVisible(); }).length;
-      var cards = lista.map(function (l) {
-        var nome = nomeCamada(l);
-        return cartao(nome, iconeCamada(nome), l.getVisible(), l.getOpacity(),
-          function (v) { ligarCamada(l, v); salvarCam(); render(); },
-          function (o) { l.setOpacity(o); (estadoCam[nome] = estadoCam[nome] || {}).o = o; salvarCam(); });
-      });
-      return pasta(id, titulo, icone, ativos + '/' + lista.length, ativos > 0, ativos > 0 && ativos < lista.length,
-        function (v) { lista.forEach(function (l) { ligarCamada(l, v); }); salvarCam(); }, cards);
+    // titulo/icone são opcionais: dentro da pasta de um bairro o cartão mostra só o tipo ("Lotes", "Mosaico"), sem repetir o bairro
+    function cartaoDeCamada(l, titulo, icone) {
+      var nome = nomeCamada(l);
+      return cartao(titulo || nome, icone || iconeCamada(nome), l.getVisible(), l.getOpacity(),
+        function (v) { ligarCamada(l, v); salvarCam(); render(); },
+        function (o) { l.setOpacity(o); (estadoCam[nome] = estadoCam[nome] || {}).o = o; salvarCam(); });
     }
+    function pastaDeCamadas(id, titulo, icone, lista, filhos) {
+      var ativos = lista.filter(function (l) { return l.getVisible(); }).length;
+      return pasta(id, titulo, icone, ativos + '/' + lista.length, ativos > 0, ativos > 0 && ativos < lista.length,
+        function (v) { lista.forEach(function (l) { ligarCamada(l, v); }); salvarCam(); },
+        filhos || lista.map(function (l) { return cartaoDeCamada(l); }));
+    }
+    function ehQuadras(l) { return l === window.lyr_Quadras_1 || /^quadras?$/i.test(nomeCamada(l)); }
 
-    var mosaicos = ls.filter(ehMosaico), poligonos = ls.filter(function (l) { return !ehMosaico(l); });
-    corpo.appendChild(pastaDeCamadas('poligonos', 'Polígonos', '⬠', poligonos));
-    corpo.appendChild(pastaDeCamadas('mosaicos', 'Mosaicos', '🖼', mosaicos));
+    // ---- agrupamento por bairro ----
+    function chaveBairro(s) { return String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[_\s]+/g, ' ').trim(); }
+    // Mosaico: propriedade 'bairro' (definida em 01-mosaicos.js). Polígono: nome da camada "Bairro_Tipo" — tudo antes do último "_" é o bairro.
+    function infoBairro(l) {
+      var b = l.get('bairro');
+      if (b) return { nome: String(b), tipo: ehMosaico(l) ? 'Mosaico' : nomeCamada(l), explicito: true };
+      if (ehMosaico(l)) return null;                                   // base (Google, nomes de ruas...)
+      var p = nomeCamada(l).split('_');
+      if (p.length < 2) return null;
+      var tipo = p.pop();
+      return { nome: p.join(' '), tipo: tipo, explicito: false };
+    }
+    var quadras = [], base = [], soltas = [], bairros = {};
+    ls.forEach(function (l) {
+      if (ehQuadras(l)) { quadras.push(l); return; }
+      var inf = infoBairro(l);
+      if (!inf) { (ehMosaico(l) ? base : soltas).push(l); return; }
+      var k = chaveBairro(inf.nome), g = bairros[k] || (bairros[k] = { nome: inf.nome, explicito: false, itens: [] });
+      g.itens.push({ l: l, tipo: inf.tipo });
+      if (inf.explicito && !g.explicito) { g.nome = inf.nome; g.explicito = true; }   // o nome com acento (do mosaico) vence o tirado do nome da camada
+    });
+
+    // Quadras fica solta no topo. Depois "Bairros" (recolhida): uma pasta por bairro com os polígonos e o mosaico dele. Por fim o mapa base.
+    quadras.forEach(function (l) { corpo.appendChild(cartaoDeCamada(l)); });
+    var chaves = Object.keys(bairros).sort(function (a, b) { return bairros[a].nome.localeCompare(bairros[b].nome, 'pt-BR'); });
+    if (chaves.length || soltas.length) {
+      var todasB = [];
+      var filhosB = chaves.map(function (k) {
+        var g = bairros[k], lista = g.itens.map(function (x) { return x.l; });
+        todasB = todasB.concat(lista);
+        return pastaDeCamadas('bairro:' + k, g.nome, '📍', lista,
+          g.itens.map(function (x) { return cartaoDeCamada(x.l, x.tipo, ehMosaico(x.l) ? '🖼' : '⬠'); }));
+      });
+      soltas.forEach(function (l) { todasB.push(l); filhosB.push(cartaoDeCamada(l, null, '⬠')); });   // camada sem "_" no nome: fica solta dentro de Bairros
+      corpo.appendChild(pastaDeCamadas('bairros', 'Bairros', '🏘️', todasB, filhosB));
+    }
+    if (base.length) corpo.appendChild(pastaDeCamadas('mosaicos', 'Mapa base', '🗺️', base));
 
     // pasta Marcações: cada marcação do usuário com seu próprio liga/desliga
     var fsm = fonte.getFeatures(), camOn = camada.getVisible();

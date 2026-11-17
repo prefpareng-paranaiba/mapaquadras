@@ -6,6 +6,11 @@
 //   1) gere os tiles (gdal2tiles) e coloque a pasta em  mosaicos/<nome_da_pasta>/z/x/y.webp
 //   2) acrescente uma linha na lista abaixo (veja o exemplo comentado)
 //
+// BAIRROS NO PAINEL DE CAMADAS: cada bairro vira uma pasta (Bairros > Santa Mônica) com o mosaico e os polígonos dele.
+//   - o nome da pasta é o "nome" do mosaico (sem o que vem entre parênteses); para outro nome, acrescente  bairro: 'Nome'
+//   - os polígonos do QGIS entram na pasta se a camada se chamar  Bairro_Tipo  (ex.: Santa_Monica_Lotes, Santa_Monica_A.Construida):
+//     tudo antes do ÚLTIMO "_" é o bairro (acentos e maiúsculas não importam); o que vem depois é o nome do polígono na pasta.
+//
 // MOSAICOS_BASE: de onde os tiles são baixados.
 //   ''            -> mesma pasta do site (precisa subir as pastas de tiles junto)
 //   'https://meu-bucket.exemplo.com/mosaicos/' -> tiles hospedados à parte (site leve, tiles no R2/S3/Pages)

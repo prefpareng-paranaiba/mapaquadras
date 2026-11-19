@@ -951,6 +951,40 @@
     var item = corpo.querySelector('.mq-item.sel'); if (item && item.scrollIntoView) item.scrollIntoView({ block: 'nearest' });
   });
   // alguns navegadores móveis dispararam o balão da quadra antes: garante que ele não reapareça por cima da seleção
+  // ---------- atalhos de teclado (desenho e edição de pontos) ----------
+  // Ctrl+Z (ou Cmd+Z)  -> desfaz: último ponto do desenho, ou última alteração na edição de pontos
+  // Delete / Backspace -> desenhando: remove o último ponto; editando: apaga o ponto sob o cursor do mouse
+  var ultimoPixel = null;
+  map.on('pointermove', function (e) { ultimoPixel = e.pixel; });
+  function campoTexto(t) {
+    if (!t || !t.tagName) return false;
+    if (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return true;
+    return t.tagName === 'INPUT' && ['checkbox', 'radio', 'range', 'button', 'color', 'file'].indexOf((t.type || '').toLowerCase()) < 0;
+  }
+  document.addEventListener('keydown', function (e) {
+    if (!(draw || (modificar && editando)) || e.defaultPrevented || e.altKey || campoTexto(e.target)) return;
+    var k = e.key, mod = e.ctrlKey || e.metaKey;
+    var desfazer = mod && !e.shiftKey && (k === 'z' || k === 'Z' || e.code === 'KeyZ');
+    var apagar = !mod && (k === 'Delete' || k === 'Backspace');
+    if (!desfazer && !apagar) return;
+    e.preventDefault();
+    if (modificar && editando) {
+      var f = editando;
+      if (desfazer) {
+        if (!snapshots.length) { aviso('Nada para desfazer.'); return; }
+        f.getGeometry().setCoordinates(snapshots.pop()); camada.changed();
+      } else {
+        var tp = f.getGeometry().getType();
+        if (tp !== 'Polygon' && tp !== 'LineString') return;
+        var i = ultimoPixel ? verticeMaisPerto(f, ultimoPixel) : -1;
+        if (i < 0) { aviso('Passe o mouse sobre o ponto e aperte Delete.'); return; }
+        if (apagarVertice(f, i)) camada.changed();
+      }
+    } else if (draw) {
+      draw.removeLastPoint();                       // ponto/linha/polígono em desenho: remove o último ponto marcado
+    }
+  });
+
   // usado pela medição (05-medicao.js) para guardar o polígono/linha medido em "Minhas marcações"
   function adicionarMarcacao(geom, props, editar) {
     var f = new ol.Feature(geom);

@@ -150,24 +150,35 @@
     'background:#fff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);padding:10px 12px;font:14px sans-serif;' +
     'width:380px;max-width:calc(100vw - 24px)';
   painel.innerHTML =
-    '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">' +
+    // barra compacta (painel recolhido): alça + resultado + abrir + fechar
+    '<div id="medMini" class="med-mini" style="align-items:center;gap:8px;font:600 14px sans-serif;cursor:grab;touch-action:none;user-select:none">' +
+    '<span class="med-grip" title="Arraste para mover. Toque para abrir." style="color:#777;font-size:18px;line-height:1">✥</span>' +
+    '<span id="medMiniTxt" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(300px,calc(100vw - 150px))"></span>' +
+    '<button id="medExpandir" aria-label="Abrir painel" title="Abrir painel" style="' + BTN + 'background:#eee;padding:5px 9px">▢</button>' +
+    '<button id="medFechar2" aria-label="Fechar medição" title="Fechar medição" style="border:0;background:none;font-size:22px;line-height:1;cursor:pointer">×</button></div>' +
+    '<div class="med-corpo">' +
+    '<div id="medCab" style="display:flex;gap:6px;align-items:center;margin-bottom:8px">' +
     '<button id="medDist" style="' + BTN + '">Distância</button>' +
     '<button id="medArea" style="' + BTN + '">Área</button>' +
-    '<button id="medFechar" aria-label="Fechar" style="margin-left:auto;border:0;background:none;font-size:22px;line-height:1;cursor:pointer">×</button></div>' +
+    '<span id="medGrip" class="med-grip" title="Arraste para mover o painel (duplo clique: voltar à posição original)" style="margin-left:auto;cursor:grab;touch-action:none;user-select:none;font-size:20px;line-height:1;padding:5px 9px;color:#777">✥</span>' +
+    '<button id="medPin" aria-label="Fixar painel" style="' + BTN + 'background:#eee;padding:5px 8px"></button>' +
+    '<button id="medMin" aria-label="Recolher painel" title="Recolher painel (continua medindo)" style="' + BTN + 'background:#eee;padding:5px 9px">–</button>' +
+    '<button id="medFechar" aria-label="Fechar" style="border:0;background:none;font-size:22px;line-height:1;cursor:pointer">×</button></div>' +
     '<div id="medResultado" style="font-size:16px;font-weight:bold;min-height:22px"></div>' +
     '<div id="medDetalhe" style="color:#555;font-size:13px;margin:2px 0 2px"></div>' +
     '<div id="medCentro" style="color:#555;font-size:13px;margin:0 0 8px"></div>' +
     '<div style="display:flex;gap:6px">' +
-    '<button id="medDesfazer" style="' + BTN + 'background:#eee;flex:1">Desfazer</button>' +
+    '<button id="medDesfazer" title="Desfazer último ponto (Ctrl+Z)" style="' + BTN + 'background:#eee;flex:1">Desfazer</button>' +
     '<button id="medLimpar" style="' + BTN + 'background:#eee;flex:1">Limpar</button>' +
     '<button id="medCopiar" style="' + BTN + 'background:#1e88e5;color:#fff;flex:1">Copiar</button></div>' +
     '<div style="display:flex;gap:6px;margin-top:6px">' +
-    '<button id="medApagar" style="' + BTN + 'background:#eee;flex:1">🗑 Apagar ponto</button>' +
+    '<button id="medApagar" title="Apagar ponto (ou passe o mouse sobre o ponto e aperte Delete)" style="' + BTN + 'background:#eee;flex:1">🗑 Apagar ponto</button>' +
     '<button id="medKml" style="' + BTN + 'background:#43a047;color:#fff;flex:1">🌍 Exportar KML</button></div>' +
     '<div style="display:flex;gap:6px;margin-top:6px">' +
     '<button id="medSalvar" style="' + BTN + 'background:#8e24aa;color:#fff;flex:1">📌 Salvar em Minhas marcações</button></div>' +
     '<div style="display:flex;gap:6px;margin-top:6px">' +
-    '<button id="medCompartilhar" style="' + BTN + 'background:#25d366;color:#fff;flex:1">📤 Compartilhar imagem</button></div>';
+    '<button id="medCompartilhar" style="' + BTN + 'background:#25d366;color:#fff;flex:1">📤 Compartilhar imagem</button></div>' +
+    '</div>';   // fecha .med-corpo
   document.body.appendChild(painel);
 
   var elResultado = document.getElementById('medResultado');
@@ -181,6 +192,156 @@
   var btnApagar = document.getElementById('medApagar');
   var btnKml = document.getElementById('medKml');
   var btnSalvar = document.getElementById('medSalvar');
+
+  // ================= PAINEL MÓVEL / FIXO / OCULTÁVEL =================
+  // - arrastar: pela alça ✥ (ou pelo espaço vazio da barra de cima, ou pela barra compacta). Fica dentro da área do mapa.
+  //   Duplo clique na alça volta à posição original (embaixo, centralizado). A posição fica salva neste aparelho.
+  // - 🕒 automático (padrão): o painel recolhe numa barra compacta com o resultado quando você toca no mapa
+  //   ou fica AUTO_OCULTAR_MS sem mexer nele. Tocar na barra compacta abre de novo.
+  // - 📌 fixo: o painel nunca recolhe sozinho. O botão – recolhe quando você quiser, em qualquer modo.
+  var AUTO_OCULTAR_MS = 6000;
+  var mapaEl = document.getElementById('map');
+  var elMini = document.getElementById('medMini');
+  var elMiniTxt = document.getElementById('medMiniTxt');
+  var btnPin = document.getElementById('medPin');
+  var minimizado = false, livre = false, tIdle = null, tipoUlt = 'mouse';
+  var fixado = lerLSmed('medPainelFixado') === '1';
+  var stMed = document.createElement('style');
+  stMed.textContent =
+    '#medPainel .med-mini{display:none}' +
+    '#medPainel.med-min .med-mini{display:flex}' +
+    '#medPainel.med-min .med-corpo{display:none}' +
+    '#medPainel.med-min{width:auto !important;padding:6px 10px !important}';
+  document.head.appendChild(stMed);
+
+  function lerLSmed(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function gravarLSmed(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} }
+
+  function limitarPos(x, y) {                       // mantém o painel inteiro dentro da área do mapa (não vai para baixo do PDF / Street View)
+    var mw = (mapaEl && mapaEl.clientWidth) || window.innerWidth, mh = (mapaEl && mapaEl.clientHeight) || window.innerHeight;
+    var w = painel.offsetWidth, h = painel.offsetHeight;
+    return { x: Math.max(4, Math.min(x, mw - w - 4)), y: Math.max(4, Math.min(y, mh - h - 4)) };
+  }
+  function aplicarPos(x, y) {                       // !important: ganha das regras do dock (12-dock-pdf-streetview.js)
+    painel.style.setProperty('left', Math.round(x) + 'px', 'important');
+    painel.style.setProperty('top', Math.round(y) + 'px', 'important');
+    painel.style.setProperty('bottom', 'auto', 'important');
+    painel.style.setProperty('transform', 'none', 'important');
+  }
+  function resetarPos() {
+    livre = false;
+    painel.style.setProperty('left', '50%', '');
+    painel.style.setProperty('bottom', '24px', '');
+    painel.style.setProperty('transform', 'translateX(-50%)', '');
+    painel.style.removeProperty('top');
+    gravarLSmed('medPainelPos', null);
+  }
+  function salvarPos() {
+    var r = painel.getBoundingClientRect();
+    gravarLSmed('medPainelPos', JSON.stringify({ x: Math.round(r.left), y: Math.round(r.top) }));
+  }
+  function restaurarPos() {
+    var p = null;
+    try { p = JSON.parse(lerLSmed('medPainelPos') || 'null'); } catch (e) {}
+    if (p && isFinite(p.x) && isFinite(p.y)) { livre = true; var q = limitarPos(p.x, p.y); aplicarPos(q.x, q.y); }
+    else resetarPos();
+  }
+  function reajustarPos() {
+    if (!livre || painel.style.display === 'none') return;
+    var r = painel.getBoundingClientRect(), q = limitarPos(r.left, r.top);
+    aplicarPos(q.x, q.y);
+  }
+  window.addEventListener('resize', reajustarPos);
+  if (window.ResizeObserver) {                      // o dock muda o tamanho do mapa; o painel recolher/abrir muda o dele
+    var roMed = new ResizeObserver(reajustarPos);
+    if (mapaEl) roMed.observe(mapaEl);
+    roMed.observe(painel);
+  }
+
+  function arrastavel(el, aoToque) {                // arrasta o painel por este elemento; toque sem arrastar chama aoToque
+    var g = null;
+    el.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      if (e.target.closest && e.target.closest('button')) return;
+      var r = painel.getBoundingClientRect();
+      g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, l0: r.left, t0: r.top, moveu: false };
+      try { el.setPointerCapture(e.pointerId); } catch (x) {}
+      e.preventDefault();
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (!g || e.pointerId !== g.id) return;
+      var dx = e.clientX - g.x0, dy = e.clientY - g.y0;
+      if (!g.moveu && Math.hypot(dx, dy) < 5) return;
+      g.moveu = true; livre = true;
+      var q = limitarPos(g.l0 + dx, g.t0 + dy);
+      aplicarPos(q.x, q.y);
+    });
+    el.addEventListener('pointerup', function (e) {
+      if (!g || e.pointerId !== g.id) return;
+      var t = g; g = null;
+      if (t.moveu) salvarPos(); else if (aoToque) aoToque();
+    });
+    el.addEventListener('pointercancel', function (e) {
+      if (!g || e.pointerId !== g.id) return;
+      if (g.moveu) salvarPos();
+      g = null;
+    });
+  }
+
+  function atualizarPin() {
+    btnPin.textContent = fixado ? '📌' : '🕒';
+    btnPin.style.background = fixado ? '#ffe0b2' : '#eee';
+    btnPin.setAttribute('aria-pressed', fixado ? 'true' : 'false');
+    btnPin.title = fixado ? 'Fixado: não recolhe sozinho. Toque para recolher automaticamente.'
+                          : 'Automático: recolhe ao tocar no mapa. Toque para fixar o painel.';
+  }
+  function atualizarMini() { if (elMiniTxt) elMiniTxt.textContent = elResultado.textContent; }
+
+  function ocupado() { return !ativo || fixado || minimizado || apagando || gerando; }
+  function agendarOcultar() {
+    clearTimeout(tIdle);
+    if (ocupado()) return;
+    tIdle = setTimeout(function () {
+      if (ocupado()) return;
+      if (tipoUlt === 'mouse' && painel.matches && painel.matches(':hover')) { agendarOcultar(); return; }   // mouse parado em cima: não recolhe
+      minimizar();
+    }, AUTO_OCULTAR_MS);
+  }
+  function minimizar() {
+    minimizado = true; clearTimeout(tIdle);
+    painel.classList.add('med-min'); atualizarMini();
+  }
+  function expandir() {
+    minimizado = false;
+    painel.classList.remove('med-min');
+    agendarOcultar();
+  }
+  function abrirPainelMed() {                       // chamado ao ligar a medição
+    minimizado = false; painel.classList.remove('med-min');
+    restaurarPos(); atualizarPin(); atualizarMini(); agendarOcultar();
+  }
+
+  arrastavel(document.getElementById('medCab'), null);
+  arrastavel(elMini, expandir);
+  document.getElementById('medCab').addEventListener('dblclick', function (e) {   // duplo clique no espaço vazio/alça da barra
+    if (!(e.target.closest && e.target.closest('button'))) resetarPos();
+  });
+  document.getElementById('medMin').onclick = minimizar;
+  document.getElementById('medExpandir').onclick = expandir;
+  document.getElementById('medFechar2').onclick = function () { desligar(); };
+  btnPin.onclick = function () {
+    fixado = !fixado; gravarLSmed('medPainelFixado', fixado ? '1' : '0');
+    atualizarPin(); agendarOcultar();
+  };
+  ['pointerdown', 'pointermove', 'keydown', 'focusin', 'wheel'].forEach(function (nm) {
+    painel.addEventListener(nm, function (e) { if (e.pointerType) tipoUlt = e.pointerType; agendarOcultar(); }, true);
+  });
+  // tocar no mapa (para marcar pontos ou mover) recolhe o painel automático, liberando a vista
+  map.getViewport().addEventListener('pointerdown', function (e) {
+    if (ocupado() || !e.isPrimary) return;
+    if (e.target.closest && e.target.closest('.ol-overlaycontainer-stopevent')) return;   // controles e balões
+    minimizar();
+  }, true);
 
   function pintarAbas() {
     btnDist.style.cssText = BTN + (modo === 'dist' ? 'background:#e91e63;color:#fff' : 'background:#eee');
@@ -225,6 +386,7 @@
       elResultado.textContent = 'Toque no ponto que quer apagar';
       elDetalhe.textContent = 'Toque em "Cancelar" para sair';
     }
+    atualizarMini();
   }
 
   // apagar um ponto específico: toque no botão e depois no ponto que quer remover
@@ -273,6 +435,7 @@
     dblZoom.forEach(function (i) { i.setActive(false); });   // sem zoom por duplo-toque enquanto mede
     btnMedir.style.background = '#e8f0fe';
     painel.style.display = 'block';
+    abrirPainelMed();
     pintarAbas();
     desenhar();
   }
@@ -286,6 +449,7 @@
     dblZoom.forEach(function (i) { i.setActive(true); }); dblZoom = [];
     pts = []; tituloImg = '';
     fonteMedir.clear();
+    clearTimeout(tIdle);
     painel.style.display = 'none';
     btnMedir.style.background = 'none';
     var info = document.getElementById('infoPino');
@@ -1421,4 +1585,42 @@
     var coord = map.getCoordinateFromPixel(pixel);
     if (coord) aoTocar(pixel, coord);
   }, true);
+
+  // ================= ATALHOS DE TECLADO (medição) =================
+  // Ctrl+Z (ou Cmd+Z)  -> desfaz o último ponto criado
+  // Delete / Backspace -> apaga o ponto que está sob o cursor do mouse
+  var ultimoPx = null;
+  vp.addEventListener('pointermove', function (e) { if (e.pointerType === 'mouse') ultimoPx = map.getEventPixel(e); }, true);
+  vp.addEventListener('mouseleave', function () { ultimoPx = null; });
+
+  function emCampoDeTexto(t) {                       // não rouba Ctrl+Z / Delete de quem está digitando (título, descrição...)
+    if (!t || !t.tagName) return false;
+    if (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return true;
+    return t.tagName === 'INPUT' && ['checkbox', 'radio', 'range', 'button', 'color', 'file'].indexOf((t.type || '').toLowerCase()) < 0;
+  }
+  document.addEventListener('keydown', function (e) {
+    if (!ativo || e.defaultPrevented || e.altKey || gerando || emCampoDeTexto(e.target)) return;
+    var k = e.key, mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.shiftKey && (k === 'z' || k === 'Z' || e.code === 'KeyZ')) {
+      e.preventDefault();
+      if (!pts.length) { aviso('Não há pontos para desfazer.'); return; }
+      pts.pop();
+      desenhar();
+    } else if (!mod && (k === 'Delete' || k === 'Backspace')) {
+      e.preventDefault();
+      var melhor = -1, dmin = 22 * 22;
+      if (ultimoPx) {
+        for (var j = 0; j < pts.length; j++) {
+          var pj = map.getPixelFromCoordinate(pts[j]);
+          if (!pj) continue;
+          var d2 = Math.pow(pj[0] - ultimoPx[0], 2) + Math.pow(pj[1] - ultimoPx[1], 2);
+          if (d2 <= dmin) { dmin = d2; melhor = j; }
+        }
+      }
+      if (melhor < 0) { aviso('Passe o mouse sobre o ponto e aperte Delete.'); return; }
+      pts.splice(melhor, 1);
+      if (apagando) modoApagar(false);
+      desenhar();
+    }
+  });
 })();

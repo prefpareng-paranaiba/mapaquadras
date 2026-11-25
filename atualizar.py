@@ -94,7 +94,7 @@ def main():
                 if not DADOS_RE.match(m.group(1)): return m.group(0)
                 if achou[0]: return ''
                 achou[0] = True
-                return ('\n' + ' ' * 8).join('<script src="%s"></script>' % x for x in novos)
+                return ('\n' + ' ' * 8).join('<script defer src="%s"></script>' % x for x in novos)
             novo_html = SRC_RE.sub(troca, html_site)
             gravar(idx_site, novo_html)
     else:

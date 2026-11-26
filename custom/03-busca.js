@@ -446,24 +446,9 @@ function carregarRuasJson() {                                  // alternativa: r
 }
 function carregarRuasLocal() {
   if (!_ruasLocal) {
-    if (window.RUAS_OSM && window.RUAS_OSM.elements) {          // já presente (ex.: <script src="ruas.js"> manual)
-      _ruasLocal = Promise.resolve(window.RUAS_OSM);
-    } else {                                                    // DESEMPENHO: injeta ruas.js sem travar a abertura do mapa
-      _ruasLocal = new Promise(function (resolve) {
-        var sc = document.createElement('script');
-        sc.src = 'ruas.js';
-        sc.async = true;
-        sc.onload = function () {
-          if (window.RUAS_OSM && window.RUAS_OSM.elements) {
-            console.info('[ruas.js] carregado:', window.RUAS_OSM.elements.length, 'trechos');
-            resolve(window.RUAS_OSM);
-            setTimeout(indiceDeRuas, 0);                        // monta o índice de busca já, fora do momento da digitação
-          } else { carregarRuasJson().then(resolve); }
-        };
-        sc.onerror = function () { carregarRuasJson().then(resolve); };
-        document.head.appendChild(sc);
-      });
-    }
+    _ruasLocal = (window.RUAS_OSM && window.RUAS_OSM.elements)
+      ? Promise.resolve(window.RUAS_OSM)
+      : carregarRuasJson();
   }
   return _ruasLocal;
 }
